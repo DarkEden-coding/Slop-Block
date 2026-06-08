@@ -255,14 +255,16 @@ async fn finalize(state: &AppState, s: &db::VerificationSession) {
     let Some(pool) = state.db.as_ref() else {
         return;
     };
+    let login = s
+        .metadata
+        .get("login")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&s.subject_id);
     let _ = db::trust_subject(
         pool,
         s.repository_id,
         "github_user",
-        s.metadata
-            .get("login")
-            .and_then(|v| v.as_str())
-            .unwrap_or(&s.subject_id),
+        login,
         s.github_user_id,
         Some("oauth_captcha_verified"),
         None,
@@ -272,83 +274,70 @@ async fn finalize(state: &AppState, s: &db::VerificationSession) {
     let Ok(Some(repo)) = db::get_repository(pool, s.repository_id).await else {
         return;
     };
-    let Ok(Some(pol)) = db::get_policy(pool, repo.repository_id).await else {
-        return;
+    let p: policy::VerificationPolicy = match db::get_policy(pool, repo.repository_id).await {
+        Ok(Some(pol)) if pol.enabled => serde_json::from_value(pol.policy).unwrap_or_default(),
+        Ok(Some(_)) => return,
+        _ => policy::VerificationPolicy::default(),
     };
-    let p: policy::VerificationPolicy = serde_json::from_value(pol.policy).unwrap_or_default();
     let token = installation_token(state, repo.installation_id as u64)
         .await
         .ok();
     if let Some(token) = token {
-        for label in [p.apply_label.as_ref(), p.pending_label.as_ref()]
-            .into_iter()
-            .flatten()
-        {
-            let _ = github::ReqwestGitHubClient::with_base_url(&state.config.github_api_base)
-                .remove_label(
-                    &token,
-                    &repo.owner,
-                    &repo.name,
-                    s.subject_id.parse().unwrap_or(0),
-                    label,
-                )
-                .await;
-        }
-        if let Some(label) = p.verified_label {
-            let _ = github::ReqwestGitHubClient::with_base_url(&state.config.github_api_base)
-                .add_labels(
-                    &token,
-                    &repo.owner,
-                    &repo.name,
-                    s.subject_id.parse().unwrap_or(0),
-                    &[label],
-                )
-                .await;
-        }
-        if let Ok(Some(a)) = db::get_bot_artifact(
-            pool,
-            repo.repository_id,
-            &s.subject_type,
-            &s.subject_id,
-            "comment",
-        )
-        .await
-        {
-            if let Some(id) = a.external_id.and_then(|x| x.parse().ok()) {
-                let _ = github::ReqwestGitHubClient::with_base_url(&state.config.github_api_base)
-                    .update_issue_comment(
-                        &token,
-                        &repo.owner,
-                        &repo.name,
-                        id,
-                        "Human verification completed. Thank you.",
-                    )
-                    .await;
+        let client = github::ReqwestGitHubClient::with_base_url(&state.config.github_api_base);
+        let mut sessions = vec![s.clone()];
+        if let Some(user_id) = s.github_user_id {
+            if let Ok(done) =
+                db::complete_pending_sessions_for_user(pool, s.repository_id, user_id).await
+            {
+                sessions.extend(done.into_iter().filter(|session| session.id != s.id));
+            }
+            if let Ok(comments) =
+                db::list_bot_artifacts_for_user(pool, s.repository_id, user_id, "comment").await
+            {
+                for a in comments {
+                    if let Some(id) = a.external_id.and_then(|x| x.parse().ok()) {
+                        let _ = client
+                            .delete_issue_comment(&token, &repo.owner, &repo.name, id)
+                            .await;
+                    }
+                }
+            }
+            if let Ok(checks) =
+                db::list_bot_artifacts_for_user(pool, s.repository_id, user_id, "check_run").await
+            {
+                for a in checks {
+                    if let Some(id) = a.external_id.and_then(|x| x.parse().ok()) {
+                        let sha = a.data.get("sha").and_then(|v| v.as_str()).unwrap_or("");
+                        let req = CheckRunRequest {
+                            name: "Human Auth".into(),
+                            head_sha: sha.into(),
+                            status: Some("completed".into()),
+                            conclusion: Some("success".into()),
+                            details_url: None,
+                            output: Some(
+                                json!({"title":"Human verification complete","summary":"The author completed OAuth and CAPTCHA verification."}),
+                            ),
+                        };
+                        let _ = client
+                            .update_check_run(&token, &repo.owner, &repo.name, id, &req)
+                            .await;
+                    }
+                }
             }
         }
-        if let Ok(Some(a)) = db::get_bot_artifact(
-            pool,
-            repo.repository_id,
-            &s.subject_type,
-            &s.subject_id,
-            "check_run",
-        )
-        .await
-        {
-            if let Some(id) = a.external_id.and_then(|x| x.parse().ok()) {
-                let sha = a.data.get("sha").and_then(|v| v.as_str()).unwrap_or("");
-                let req = CheckRunRequest {
-                    name: "Human Auth".into(),
-                    head_sha: sha.into(),
-                    status: Some("completed".into()),
-                    conclusion: Some("success".into()),
-                    details_url: None,
-                    output: Some(
-                        json!({"title":"Human verification complete","summary":"The author completed OAuth and CAPTCHA verification."}),
-                    ),
-                };
-                let _ = github::ReqwestGitHubClient::with_base_url(&state.config.github_api_base)
-                    .update_check_run(&token, &repo.owner, &repo.name, id, &req)
+        for session in sessions {
+            let issue_number = session.subject_id.parse().unwrap_or(0);
+            for label in [p.apply_label.as_ref(), p.pending_label.as_ref()]
+                .into_iter()
+                .flatten()
+            {
+                let _ = client
+                    .remove_label(&token, &repo.owner, &repo.name, issue_number, label)
+                    .await;
+            }
+            if let Some(label) = p.verified_label.clone() {
+                let _ = client
+                    .add_labels(&token, &repo.owner, &repo.name, issue_number, &[label])
                     .await;
             }
         }

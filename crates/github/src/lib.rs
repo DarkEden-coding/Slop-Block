@@ -259,6 +259,13 @@ pub trait GitHubApi: Send + Sync {
         comment_id: u64,
         body: &str,
     ) -> Result<IssueComment, GitHubError>;
+    async fn delete_issue_comment(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        comment_id: u64,
+    ) -> Result<(), GitHubError>;
     async fn create_check_run(
         &self,
         token: &str,
@@ -465,6 +472,28 @@ impl GitHubApi for ReqwestGitHubClient {
             .json(&serde_json::json!({"body": body})),
         )
         .await
+    }
+    async fn delete_issue_comment(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        comment_id: u64,
+    ) -> Result<(), GitHubError> {
+        let r = self
+            .authed(
+                reqwest::Method::DELETE,
+                &Self::repo_path(owner, repo, &format!("/issues/comments/{comment_id}")),
+                token,
+            )
+            .send()
+            .await
+            .map_err(GitHubError::Http)?;
+        if r.status().is_success() || r.status() == StatusCode::NOT_FOUND {
+            Ok(())
+        } else {
+            Err(GitHubError::ApiStatus(r.status()))
+        }
     }
     async fn create_check_run(
         &self,
