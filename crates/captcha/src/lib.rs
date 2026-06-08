@@ -44,6 +44,8 @@ impl CaptchaVerification {
 
 #[derive(Debug, thiserror::Error)]
 pub enum CaptchaError {
+    #[error("captcha provider is not configured")]
+    NotConfigured,
     #[error("captcha provider request failed: {0}")]
     Request(#[from] reqwest::Error),
 }
@@ -135,12 +137,159 @@ impl CaptchaProvider for CloudflareTurnstile {
 
         Ok(CaptchaVerification {
             success: response.success,
-            provider: "cloudflare-turnstile".to_string(),
+            provider: PROVIDER_CLOUDFLARE_TURNSTILE.to_string(),
             error_codes: response.error_codes,
             challenge_ts: response.challenge_ts,
             hostname: response.hostname,
             action: response.action,
             cdata: response.cdata,
+        })
+    }
+}
+
+pub const PROVIDER_CLOUDFLARE_TURNSTILE: &str = "cloudflare-turnstile";
+pub const PROVIDER_HCAPTCHA: &str = "hcaptcha";
+pub const PROVIDER_GOOGLE_RECAPTCHA_V2: &str = "google-recaptcha-v2";
+pub const PROVIDER_DEV_BYPASS: &str = "dev-bypass";
+
+#[derive(Debug, Clone)]
+pub struct HCaptcha {
+    client: reqwest::Client,
+    secret: String,
+    endpoint: String,
+}
+
+impl HCaptcha {
+    pub const DEFAULT_ENDPOINT: &'static str = "https://api.hcaptcha.com/siteverify";
+
+    pub fn new(secret: impl Into<String>) -> Self {
+        Self::with_endpoint(secret, Self::DEFAULT_ENDPOINT)
+    }
+
+    pub fn with_endpoint(secret: impl Into<String>, endpoint: impl Into<String>) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            secret: secret.into(),
+            endpoint: endpoint.into(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct HCaptchaSiteverifyResponse {
+    success: bool,
+    #[serde(default, rename = "error-codes")]
+    error_codes: Vec<String>,
+    #[serde(default)]
+    challenge_ts: Option<String>,
+    #[serde(default)]
+    hostname: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl CaptchaProvider for HCaptcha {
+    async fn verify(
+        &self,
+        token: &str,
+        remote_ip: Option<&str>,
+    ) -> Result<CaptchaVerification, CaptchaError> {
+        let mut form = vec![
+            ("secret".to_string(), self.secret.clone()),
+            ("response".to_string(), token.to_string()),
+        ];
+        if let Some(remote_ip) = remote_ip {
+            form.push(("remoteip".to_string(), remote_ip.to_string()));
+        }
+
+        let response = self
+            .client
+            .post(&self.endpoint)
+            .form(&form)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<HCaptchaSiteverifyResponse>()
+            .await?;
+
+        Ok(CaptchaVerification {
+            success: response.success,
+            provider: PROVIDER_HCAPTCHA.to_string(),
+            error_codes: response.error_codes,
+            challenge_ts: response.challenge_ts,
+            hostname: response.hostname,
+            action: None,
+            cdata: None,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GoogleRecaptchaV2 {
+    client: reqwest::Client,
+    secret: String,
+    endpoint: String,
+}
+
+impl GoogleRecaptchaV2 {
+    pub const DEFAULT_ENDPOINT: &'static str = "https://www.google.com/recaptcha/api/siteverify";
+
+    pub fn new(secret: impl Into<String>) -> Self {
+        Self::with_endpoint(secret, Self::DEFAULT_ENDPOINT)
+    }
+
+    pub fn with_endpoint(secret: impl Into<String>, endpoint: impl Into<String>) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            secret: secret.into(),
+            endpoint: endpoint.into(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GoogleRecaptchaSiteverifyResponse {
+    success: bool,
+    #[serde(default, rename = "error-codes")]
+    error_codes: Vec<String>,
+    #[serde(default)]
+    challenge_ts: Option<String>,
+    #[serde(default)]
+    hostname: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl CaptchaProvider for GoogleRecaptchaV2 {
+    async fn verify(
+        &self,
+        token: &str,
+        remote_ip: Option<&str>,
+    ) -> Result<CaptchaVerification, CaptchaError> {
+        let mut form = vec![
+            ("secret".to_string(), self.secret.clone()),
+            ("response".to_string(), token.to_string()),
+        ];
+        if let Some(remote_ip) = remote_ip {
+            form.push(("remoteip".to_string(), remote_ip.to_string()));
+        }
+
+        let response = self
+            .client
+            .post(&self.endpoint)
+            .form(&form)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<GoogleRecaptchaSiteverifyResponse>()
+            .await?;
+
+        Ok(CaptchaVerification {
+            success: response.success,
+            provider: PROVIDER_GOOGLE_RECAPTCHA_V2.to_string(),
+            error_codes: response.error_codes,
+            challenge_ts: response.challenge_ts,
+            hostname: response.hostname,
+            action: None,
+            cdata: None,
         })
     }
 }

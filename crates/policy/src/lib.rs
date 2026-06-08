@@ -14,6 +14,7 @@ pub struct VerificationPolicy {
     pub pending_label: Option<String>,
     pub comment_on_required: bool,
     pub close_unverified: bool,
+    pub captcha_provider: Option<String>,
 }
 
 impl Default for VerificationPolicy {
@@ -30,6 +31,7 @@ impl Default for VerificationPolicy {
             pending_label: Some("human-auth-pending".into()),
             comment_on_required: true,
             close_unverified: false,
+            captcha_provider: None,
         }
     }
 }

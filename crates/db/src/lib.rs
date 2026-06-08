@@ -412,6 +412,26 @@ pub async fn complete_job(pool: &PgPool, id: i64) -> Result<Option<Job>> {
     sqlx::query_as::<_, Job>("UPDATE jobs SET status='completed', completed_at=now(), locked_by=NULL, locked_at=NULL, updated_at=now() WHERE id=$1 RETURNING *").bind(id).fetch_optional(pool).await
 }
 
+pub async fn get_app_setting(pool: &PgPool, key: &str) -> Result<Option<Value>> {
+    let row: Option<(Value,)> =
+        sqlx::query_as("SELECT value FROM app_settings WHERE key=$1")
+            .bind(key)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.map(|(value,)| value))
+}
+
+pub async fn upsert_app_setting(pool: &PgPool, key: &str, value: Value) -> Result<Value> {
+    let (stored,): (Value,) = sqlx::query_as(
+        "INSERT INTO app_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now() RETURNING value",
+    )
+    .bind(key)
+    .bind(value)
+    .fetch_one(pool)
+    .await?;
+    Ok(stored)
+}
+
 pub async fn fail_job(
     pool: &PgPool,
     id: i64,

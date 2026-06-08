@@ -17,6 +17,12 @@ export default function DashboardPage() {
             <AuthPanel compact hideLogin />
             <Link
               className="inline-flex h-11 items-center justify-center rounded-xl border border-white/10 bg-white/5 px-4 text-sm font-semibold leading-none text-slate-100 shadow-lg shadow-black/20 transition hover:border-cyan-300/40 hover:bg-white/10"
+              href="/dashboard/settings"
+            >
+              CAPTCHA settings
+            </Link>
+            <Link
+              className="inline-flex h-11 items-center justify-center rounded-xl border border-white/10 bg-white/5 px-4 text-sm font-semibold leading-none text-slate-100 shadow-lg shadow-black/20 transition hover:border-cyan-300/40 hover:bg-white/10"
               href="/dashboard/installations"
             >
               Installations

@@ -6,8 +6,9 @@ use axum::{
     Json, Router,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use captcha::CaptchaProvider;
+use captcha::{CaptchaProvider, PROVIDER_DEV_BYPASS};
 use github::{CheckRunRequest, GitHubApi};
+use policy::VerificationPolicy;
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -15,6 +16,7 @@ use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::captcha_config::{self, SessionCaptchaConfig};
 use crate::AppState;
 
 const OAUTH_COOKIE: &str = "gho_oauth_state";
@@ -44,6 +46,8 @@ struct CallbackQuery {
 struct CaptchaBody {
     token: String,
     session_token: String,
+    #[serde(default)]
+    provider: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -53,6 +57,16 @@ struct VerifyResponse {
     subject_type: String,
     subject_id: String,
     expires_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repo: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    github_login: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    oauth_url: Option<String>,
+    captcha_required: bool,
+    oauth_required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    captcha: Option<SessionCaptchaConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -198,12 +212,35 @@ async fn get_verify(
     let s = db::get_verification_session(pool, session_id, &token_hash(token))
         .await?
         .ok_or(OAuthError::NotFound)?;
+    let policy = load_repo_policy(pool, s.repository_id).await;
+    let settings = captcha_config::load_settings(&state).await;
+    let provider_id = captcha_config::resolve_provider_id(&settings, &policy)
+        .ok_or(OAuthError::NotConfigured)?;
+    let captcha = captcha_config::session_captcha_config(&settings, &provider_id);
+    let repo = db::get_repository(pool, s.repository_id)
+        .await?
+        .map(|repo| repo.full_name);
+    let github_login = s
+        .metadata
+        .get("login")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    let oauth_url = format!(
+        "{}/api/github/oauth/start?session_id={session_id}&token={token}",
+        state.config.api_base_url.trim_end_matches('/')
+    );
     Ok(Json(VerifyResponse {
         session_id,
         status: s.status,
         subject_type: s.subject_type,
         subject_id: s.subject_id,
         expires_at: s.expires_at.unix_timestamp(),
+        repo,
+        github_login,
+        oauth_url: Some(oauth_url),
+        captcha_required: captcha.is_some(),
+        oauth_required: true,
+        captcha,
     }))
 }
 
@@ -220,20 +257,22 @@ async fn post_captcha(
     if s.status != "pending" || s.expires_at <= OffsetDateTime::now_utc() {
         return Err(OAuthError::InvalidSession);
     }
-    let cap = if state.config.turnstile_dev_bypass {
+    let policy = load_repo_policy(pool, s.repository_id).await;
+    let settings = captcha_config::load_settings(&state).await;
+    let provider_id = body
+        .provider
+        .clone()
+        .or_else(|| captcha_config::resolve_provider_id(&settings, &policy))
+        .ok_or(OAuthError::NotConfigured)?;
+    if !settings.enabled_providers.contains(&provider_id.to_string()) {
+        return Err(OAuthError::BadRequest);
+    }
+    let cap = if state.config.turnstile_dev_bypass && provider_id == PROVIDER_DEV_BYPASS {
         captcha::DevBypass::new(true)
             .verify(&body.token, None)
             .await?
     } else {
-        captcha::CloudflareTurnstile::new(
-            state
-                .config
-                .turnstile_secret
-                .as_ref()
-                .ok_or(OAuthError::NotConfigured)?,
-        )
-        .verify(&body.token, None)
-        .await?
+        captcha_config::verify_token(&state.config, &provider_id, &body.token).await?
     };
     if !cap.success {
         return Err(OAuthError::CaptchaFailed);
@@ -248,7 +287,22 @@ async fn post_captcha(
         subject_type: done.subject_type,
         subject_id: done.subject_id,
         expires_at: done.expires_at.unix_timestamp(),
+        repo: None,
+        github_login: None,
+        oauth_url: None,
+        captcha_required: false,
+        oauth_required: true,
+        captcha: None,
     }))
+}
+
+async fn load_repo_policy(pool: &db::PgPool, repository_id: i64) -> VerificationPolicy {
+    match db::get_policy(pool, repository_id).await {
+        Ok(Some(stored)) if stored.enabled => {
+            serde_json::from_value(stored.policy).unwrap_or_default()
+        }
+        _ => VerificationPolicy::default(),
+    }
 }
 
 async fn finalize(state: &AppState, s: &db::VerificationSession) {
@@ -414,7 +468,9 @@ impl IntoResponse for OAuthError {
             | OAuthError::InvalidState
             | OAuthError::InvalidSession
             | OAuthError::CaptchaFailed => StatusCode::BAD_REQUEST,
-            OAuthError::NotConfigured => StatusCode::SERVICE_UNAVAILABLE,
+            OAuthError::NotConfigured | OAuthError::Captcha(captcha::CaptchaError::NotConfigured) => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
             _ => StatusCode::BAD_GATEWAY,
         };
         (status, Json(json!({"error":{"code": format!("{self:?}").to_lowercase(), "message": self.to_string()}}))).into_response()

@@ -26,6 +26,39 @@ export type TrustedUser = {
   expires_at?: string | null;
 };
 
+export type CaptchaProviderInfo = {
+  id: string;
+  label: string;
+  site_key?: string | null;
+  configured: boolean;
+};
+
+export type CaptchaSettings = {
+  available_providers: CaptchaProviderInfo[];
+  enabled_providers: string[];
+  default_provider: string | null;
+  dev_bypass: boolean;
+};
+
+export type CaptchaPublicProvider = {
+  id: string;
+  label: string;
+  site_key: string;
+};
+
+export type CaptchaPublicConfig = {
+  providers: CaptchaPublicProvider[];
+  default_provider: string | null;
+  dev_bypass: boolean;
+};
+
+export type SessionCaptchaConfig = {
+  provider: string;
+  site_key: string;
+  label: string;
+  alternate_providers?: CaptchaPublicProvider[];
+};
+
 export type RepoPolicy = {
   enabled: boolean;
   verify_issues: boolean;
@@ -39,6 +72,7 @@ export type RepoPolicy = {
   pending_label: string | null;
   comment_on_required: boolean;
   close_unverified: boolean;
+  captcha_provider: string | null;
 };
 
 export type RepoPolicyResponse = {
@@ -67,6 +101,7 @@ export type VerifySession = {
   oauth_url?: string;
   captcha_required?: boolean;
   oauth_required?: boolean;
+  captcha?: SessionCaptchaConfig | null;
   message?: string;
 };
 
@@ -111,4 +146,11 @@ export const defaultPolicy: RepoPolicy = {
   pending_label: "human-auth-pending",
   comment_on_required: true,
   close_unverified: false,
+  captcha_provider: null,
 };
+
+export const CAPTCHA_PROVIDER_OPTIONS = [
+  { id: "cloudflare-turnstile", label: "Cloudflare Turnstile" },
+  { id: "hcaptcha", label: "hCaptcha" },
+  { id: "google-recaptcha-v2", label: "Google reCAPTCHA v2" },
+] as const;

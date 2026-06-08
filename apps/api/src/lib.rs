@@ -1,4 +1,6 @@
 pub mod admin_auth;
+pub mod captcha_config;
+pub mod captcha_routes;
 pub mod job_runner;
 pub mod oauth;
 pub mod policy_routes;
@@ -35,6 +37,11 @@ pub struct Config {
     pub api_base_url: String,
     pub web_base_url: String,
     pub turnstile_secret: Option<String>,
+    pub turnstile_site_key: Option<String>,
+    pub hcaptcha_secret: Option<String>,
+    pub hcaptcha_site_key: Option<String>,
+    pub recaptcha_secret: Option<String>,
+    pub recaptcha_site_key: Option<String>,
     pub turnstile_dev_bypass: bool,
     pub admin_api_token: Option<String>,
     pub admin_github_logins: Vec<String>,
@@ -110,6 +117,17 @@ impl Config {
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| github_web_url.clone());
         let turnstile_secret = get("TURNSTILE_SECRET").filter(|value| !value.is_empty());
+        let turnstile_site_key = get("TURNSTILE_SITE_KEY")
+            .or_else(|| get("NEXT_PUBLIC_TURNSTILE_SITE_KEY"))
+            .filter(|value| !value.is_empty());
+        let hcaptcha_secret = get("HCAPTCHA_SECRET").filter(|value| !value.is_empty());
+        let hcaptcha_site_key = get("HCAPTCHA_SITE_KEY")
+            .or_else(|| get("NEXT_PUBLIC_HCAPTCHA_SITE_KEY"))
+            .filter(|value| !value.is_empty());
+        let recaptcha_secret = get("RECAPTCHA_SECRET").filter(|value| !value.is_empty());
+        let recaptcha_site_key = get("RECAPTCHA_SITE_KEY")
+            .or_else(|| get("NEXT_PUBLIC_RECAPTCHA_SITE_KEY"))
+            .filter(|value| !value.is_empty());
         let turnstile_dev_bypass = get("TURNSTILE_DEV_BYPASS")
             .map(|value| parse_bool("TURNSTILE_DEV_BYPASS", &value))
             .transpose()?
@@ -167,6 +185,11 @@ impl Config {
             api_base_url,
             web_base_url,
             turnstile_secret,
+            turnstile_site_key,
+            hcaptcha_secret,
+            hcaptcha_site_key,
+            recaptcha_secret,
+            recaptcha_site_key,
             turnstile_dev_bypass,
             admin_api_token,
             admin_github_logins,
@@ -228,6 +251,7 @@ pub fn router(state: AppState) -> Router {
         .route("/readyz", get(readyz))
         .merge(admin_auth::routes())
         .merge(policy_routes::router())
+        .merge(captcha_routes::router())
         .merge(webhooks::routes())
         .merge(oauth::routes())
         .layer(cors_layer(&state.config))
@@ -247,6 +271,7 @@ fn cors_layer(config: &Config) -> CorsLayer {
         .allow_methods([
             axum::http::Method::GET,
             axum::http::Method::POST,
+            axum::http::Method::PUT,
             axum::http::Method::DELETE,
         ])
         .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])

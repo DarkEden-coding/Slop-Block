@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { apiFetch, defaultPolicy, type RepoPolicy, type RepoPolicyResponse } from "../lib/api";
+import { apiFetch, CAPTCHA_PROVIDER_OPTIONS, defaultPolicy, type CaptchaSettings, type RepoPolicy, type RepoPolicyResponse } from "../lib/api";
 
 const boolFields = [
   ["enabled", "Enable verification for this repository", "Master switch for this repository."],
@@ -25,6 +25,13 @@ export function RepoPolicyEditor({ repoId }: { repoId: string }) {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [captchaSettings, setCaptchaSettings] = useState<CaptchaSettings | null>(null);
+
+  useEffect(() => {
+    apiFetch<CaptchaSettings>("/api/settings/captcha")
+      .then(setCaptchaSettings)
+      .catch(() => setCaptchaSettings(null));
+  }, []);
 
   useEffect(() => {
     apiFetch<RepoPolicyResponse>(`/api/repos/${encodeURIComponent(repoId)}/policy`)
@@ -73,6 +80,27 @@ export function RepoPolicyEditor({ repoId }: { repoId: string }) {
       </div>
 
       <div className="mt-5 grid gap-4 md:grid-cols-2">
+        <label className="block rounded-2xl border border-white/10 bg-slate-950/40 p-4">
+          <span className="font-semibold text-white">CAPTCHA provider</span>
+          <p className="mt-1 text-sm text-slate-400">Override the installation default for this repository.</p>
+          <select
+            className="mt-3 h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 text-sm text-white outline-none ring-cyan-300/40 transition focus:ring-4"
+            value={policy.captcha_provider ?? ""}
+            onChange={(e) => setPolicy((p) => ({ ...p, captcha_provider: e.target.value ? e.target.value : null }))}
+          >
+            <option value="">Use installation default{captchaSettings?.default_provider ? ` (${captchaSettings.default_provider})` : ""}</option>
+            {(captchaSettings?.enabled_providers ?? CAPTCHA_PROVIDER_OPTIONS.map((option) => option.id)).map((providerId) => {
+              const label = captchaSettings?.available_providers.find((provider) => provider.id === providerId)?.label
+                ?? CAPTCHA_PROVIDER_OPTIONS.find((option) => option.id === providerId)?.label
+                ?? providerId;
+              return (
+                <option key={providerId} value={providerId}>
+                  {label}
+                </option>
+              );
+            })}
+          </select>
+        </label>
         <label className="block rounded-2xl border border-white/10 bg-slate-950/40 p-4">
           <span className="font-semibold text-white">Check mode</span>
           <select className="mt-3 h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 text-sm text-white outline-none ring-cyan-300/40 transition focus:ring-4" value={policy.check_mode} onChange={(e) => setPolicy((p) => ({ ...p, check_mode: e.target.value as RepoPolicy["check_mode"] }))}>
