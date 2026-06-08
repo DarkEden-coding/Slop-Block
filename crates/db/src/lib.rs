@@ -241,6 +241,17 @@ pub async fn upsert_policy(
     sqlx::query_as::<_, RepositoryPolicy>("INSERT INTO repository_policies (repository_id,policy,enabled) VALUES ($1,$2,$3) ON CONFLICT (repository_id) DO UPDATE SET policy=EXCLUDED.policy, enabled=EXCLUDED.enabled, updated_at=now() RETURNING *").bind(repository_id).bind(policy).bind(enabled).fetch_one(pool).await
 }
 
+pub async fn upsert_github_user(
+    pool: &PgPool,
+    github_user_id: i64,
+    login: &str,
+    avatar_url: Option<&str>,
+    raw: Value,
+) -> Result<GithubUser> {
+    sqlx::query_as::<_, GithubUser>("INSERT INTO github_users (github_user_id,login,avatar_url,raw) VALUES ($1,$2,$3,$4) ON CONFLICT (github_user_id) DO UPDATE SET login=EXCLUDED.login, avatar_url=EXCLUDED.avatar_url, raw=EXCLUDED.raw, updated_at=now() RETURNING *")
+        .bind(github_user_id).bind(login).bind(avatar_url).bind(raw).fetch_one(pool).await
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn trust_subject(
     pool: &PgPool,

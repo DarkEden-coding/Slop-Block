@@ -328,6 +328,16 @@ async fn process_subject_event(
         return Ok(());
     }
 
+    db::upsert_github_user(
+        pool,
+        ev.user.id,
+        &ev.user.login,
+        None,
+        json!({"login": ev.user.login, "type": ev.user.kind}),
+    )
+    .await
+    .map_err(WebhookError::Db)?;
+
     let mut bytes = [0_u8; 32];
     OsRng.fill_bytes(&mut bytes);
     let token_plain = URL_SAFE_NO_PAD.encode(bytes);
