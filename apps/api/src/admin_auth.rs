@@ -69,7 +69,7 @@ async fn github_start(State(state): State<AppState>) -> Result<Response, AdminAu
         .ok_or(AdminAuthError::NotConfigured)?;
     let st = random_state();
     let cookie = format!(
-        "{}={}; Path=/api/auth; HttpOnly; SameSite=Lax; Max-Age=600{}",
+        "{}={}; Path=/api; HttpOnly; SameSite=Lax; Max-Age=600{}",
         ADMIN_OAUTH_STATE_COOKIE,
         st,
         secure_suffix(&state)
@@ -159,7 +159,7 @@ async fn process_admin_oauth_callback(
         secure_suffix(state)
     );
     let clear_state = format!(
-        "{}=; Path=/api/auth; HttpOnly; SameSite=Lax; Max-Age=0{}",
+        "{}=; Path=/api; HttpOnly; SameSite=Lax; Max-Age=0{}",
         ADMIN_OAUTH_STATE_COOKIE,
         secure_suffix(state)
     );
