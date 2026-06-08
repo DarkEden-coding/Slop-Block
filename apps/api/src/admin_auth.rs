@@ -75,12 +75,9 @@ async fn github_start(State(state): State<AppState>) -> Result<Response, AdminAu
         secure_suffix(&state)
     );
     let redirect_uri = shared_oauth_callback_url(&state);
-    let authorize_base = format!(
-        "{}/login/oauth/authorize",
-        state.config.github_web_url.trim_end_matches('/')
+    let url = format!(
+        "https://github.com/login/oauth/authorize?client_id={client_id}&redirect_uri={redirect_uri}&state={st}"
     );
-    let url =
-        format!("{authorize_base}?client_id={client_id}&redirect_uri={redirect_uri}&state={st}");
     let mut res = Redirect::temporary(&url).into_response();
     res.headers_mut()
         .insert(header::SET_COOKIE, cookie.parse().unwrap());
