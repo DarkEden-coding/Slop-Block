@@ -35,6 +35,7 @@ pub struct Config {
     pub web_base_url: String,
     pub turnstile_secret: Option<String>,
     pub turnstile_dev_bypass: bool,
+    pub admin_api_token: Option<String>,
 }
 
 impl Config {
@@ -109,6 +110,20 @@ impl Config {
             .map(|value| parse_bool("TURNSTILE_DEV_BYPASS", &value))
             .transpose()?
             .unwrap_or(false);
+        if turnstile_dev_bypass && cookie_secure {
+            return Err(ConfigError::Invalid(
+                "TURNSTILE_DEV_BYPASS may only be enabled when COOKIE_SECURE=false",
+            ));
+        }
+        let admin_api_token = get("ADMIN_API_TOKEN").filter(|value| !value.is_empty());
+        if admin_api_token
+            .as_ref()
+            .is_some_and(|value| value.len() < 32)
+        {
+            return Err(ConfigError::Invalid(
+                "ADMIN_API_TOKEN must be at least 32 characters when set",
+            ));
+        }
 
         Ok(Self {
             host,
@@ -128,6 +143,7 @@ impl Config {
             web_base_url,
             turnstile_secret,
             turnstile_dev_bypass,
+            admin_api_token,
         })
     }
 
@@ -298,6 +314,17 @@ mod tests {
         assert!(matches!(
             config_with(&[]),
             Err(ConfigError::Missing("DATABASE_URL"))
+        ));
+    }
+
+    #[test]
+    fn rejects_turnstile_dev_bypass_with_secure_cookies() {
+        assert!(matches!(
+            config_with(&[
+                ("DATABASE_URL", "postgres://user:pass@localhost/db"),
+                ("TURNSTILE_DEV_BYPASS", "true")
+            ]),
+            Err(ConfigError::Invalid(_))
         ));
     }
 

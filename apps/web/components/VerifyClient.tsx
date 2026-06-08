@@ -13,32 +13,38 @@ export function VerifyClient({ sessionId }: { sessionId: string }) {
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const siteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
+  const sessionToken = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    return new URLSearchParams(window.location.search).get("token");
+  }, []);
 
   const oauthHref = useMemo(() => {
     if (typeof window === "undefined") return session?.oauth_url ?? "#";
-    const qs = new URLSearchParams(window.location.search);
-    const token = qs.get("token");
-    const base = session?.oauth_url ?? `/api/verify/${encodeURIComponent(sessionId)}/oauth`;
+    const base = session?.oauth_url ?? "/api/github/oauth/start";
     const url = new URL(base, window.location.origin);
-    url.searchParams.set("session", sessionId);
-    if (token) url.searchParams.set("token", token);
+    url.searchParams.set("session_id", sessionId);
+    if (sessionToken) url.searchParams.set("token", sessionToken);
     return url.toString();
-  }, [session, sessionId]);
+  }, [session, sessionId, sessionToken]);
 
   useEffect(() => {
-    apiFetch<VerifySession>(`/api/verify/${encodeURIComponent(sessionId)}`)
+    const query = sessionToken ? `?token=${encodeURIComponent(sessionToken)}` : "";
+    apiFetch<VerifySession>(`/api/verify/${encodeURIComponent(sessionId)}${query}`)
       .then(setSession).catch((err: Error) => setError(err.message)).finally(() => setLoading(false));
-  }, [sessionId]);
+  }, [sessionId, sessionToken]);
 
   function renderTurnstile() {
     if (siteKey && window.turnstile) window.turnstile.render("#turnstile-widget", { sitekey: siteKey, callback: setCaptchaToken });
   }
 
   async function submitCaptcha() {
-    if (!captchaToken) return;
+    if (!captchaToken || !sessionToken) {
+      setError("Verification token is missing. Please reopen the verification link from GitHub.");
+      return;
+    }
     setSubmitting(true); setError(null);
     try {
-      const updated = await apiFetch<VerifySession>(`/api/verify/${encodeURIComponent(sessionId)}/captcha`, { method: "POST", body: JSON.stringify({ token: captchaToken }) });
+      const updated = await apiFetch<VerifySession>(`/api/verify/${encodeURIComponent(sessionId)}/captcha`, { method: "POST", body: JSON.stringify({ token: captchaToken, session_token: sessionToken }) });
       setSession(updated);
     } catch (err) { setError(err instanceof Error ? err.message : "CAPTCHA submission failed"); }
     finally { setSubmitting(false); }

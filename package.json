@@ -9,5 +9,10 @@
     "docker:config": "docker compose config",
     "docker:up": "docker compose up --build"
   },
+  "pnpm": {
+    "overrides": {
+      "postcss": "8.5.15"
+    }
+  },
   "devDependencies": {}
 }

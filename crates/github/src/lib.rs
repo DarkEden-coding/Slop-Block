@@ -310,6 +310,14 @@ impl ReqwestGitHubClient {
     fn url(&self, path: &str) -> String {
         format!("{}{}", self.api_base.trim_end_matches('/'), path)
     }
+    fn repo_path(owner: &str, repo: &str, suffix: &str) -> String {
+        format!(
+            "/repos/{}/{}{}",
+            path_segment(owner),
+            path_segment(repo),
+            suffix
+        )
+    }
     fn authed(&self, method: reqwest::Method, path: &str, token: &str) -> reqwest::RequestBuilder {
         self.client
             .request(method, self.url(path))
@@ -388,7 +396,7 @@ impl GitHubApi for ReqwestGitHubClient {
         self.send_json(
             self.authed(
                 reqwest::Method::POST,
-                &format!("/repos/{owner}/{repo}/issues/{issue_number}/labels"),
+                &Self::repo_path(owner, repo, &format!("/issues/{issue_number}/labels")),
                 token,
             )
             .json(&serde_json::json!({"labels": labels})),
@@ -406,7 +414,11 @@ impl GitHubApi for ReqwestGitHubClient {
         let r = self
             .authed(
                 reqwest::Method::DELETE,
-                &format!("/repos/{owner}/{repo}/issues/{issue_number}/labels/{label}"),
+                &Self::repo_path(
+                    owner,
+                    repo,
+                    &format!("/issues/{issue_number}/labels/{}", path_segment(label)),
+                ),
                 token,
             )
             .send()
@@ -429,7 +441,7 @@ impl GitHubApi for ReqwestGitHubClient {
         self.send_json(
             self.authed(
                 reqwest::Method::POST,
-                &format!("/repos/{owner}/{repo}/issues/{issue_number}/comments"),
+                &Self::repo_path(owner, repo, &format!("/issues/{issue_number}/comments")),
                 token,
             )
             .json(&serde_json::json!({"body": body})),
@@ -447,7 +459,7 @@ impl GitHubApi for ReqwestGitHubClient {
         self.send_json(
             self.authed(
                 reqwest::Method::PATCH,
-                &format!("/repos/{owner}/{repo}/issues/comments/{comment_id}"),
+                &Self::repo_path(owner, repo, &format!("/issues/comments/{comment_id}")),
                 token,
             )
             .json(&serde_json::json!({"body": body})),
@@ -464,7 +476,7 @@ impl GitHubApi for ReqwestGitHubClient {
         self.send_json(
             self.authed(
                 reqwest::Method::POST,
-                &format!("/repos/{owner}/{repo}/check-runs"),
+                &Self::repo_path(owner, repo, "/check-runs"),
                 token,
             )
             .json(req),
@@ -482,7 +494,7 @@ impl GitHubApi for ReqwestGitHubClient {
         self.send_json(
             self.authed(
                 reqwest::Method::PATCH,
-                &format!("/repos/{owner}/{repo}/check-runs/{check_run_id}"),
+                &Self::repo_path(owner, repo, &format!("/check-runs/{check_run_id}")),
                 token,
             )
             .json(req),
@@ -498,11 +510,28 @@ impl GitHubApi for ReqwestGitHubClient {
     ) -> Result<CollaboratorPermission, GitHubError> {
         self.send_json(self.authed(
             reqwest::Method::GET,
-            &format!("/repos/{owner}/{repo}/collaborators/{username}/permission"),
+            &Self::repo_path(
+                owner,
+                repo,
+                &format!("/collaborators/{}/permission", path_segment(username)),
+            ),
             token,
         ))
         .await
     }
+}
+
+fn path_segment(input: &str) -> String {
+    let mut encoded = String::with_capacity(input.len());
+    for byte in input.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(byte as char)
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -523,6 +552,14 @@ pub enum GitHubError {
 mod tests {
     use super::*;
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+    #[test]
+    fn encodes_path_segments() {
+        assert_eq!(
+            path_segment("owner/name with space"),
+            "owner%2Fname%20with%20space"
+        );
+    }
 
     #[test]
     fn verifies_webhook_signature() {

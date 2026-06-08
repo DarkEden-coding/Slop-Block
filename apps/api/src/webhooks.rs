@@ -624,6 +624,7 @@ mod tests {
             web_base_url: "http://localhost:3000".into(),
             turnstile_secret: None,
             turnstile_dev_bypass: false,
+            admin_api_token: None,
         })
     }
 

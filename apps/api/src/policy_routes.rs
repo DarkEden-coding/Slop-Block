@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
     Json, Router,
@@ -88,7 +88,9 @@ fn default_enabled() -> bool {
 
 async fn list_installations(
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<Json<Vec<InstallationResponse>>, PolicyRouteError> {
+    ensure_admin(&state, &headers)?;
     let pool = state.db.as_ref().ok_or(PolicyRouteError::NoDb)?;
     let installations = sqlx::query_as::<_, db::GithubInstallation>(
         "SELECT * FROM github_installations ORDER BY account_login",
@@ -103,7 +105,9 @@ async fn list_installations(
 
 async fn list_repositories(
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<Json<Vec<RepositorySummary>>, PolicyRouteError> {
+    ensure_admin(&state, &headers)?;
     let pool = state.db.as_ref().ok_or(PolicyRouteError::NoDb)?;
     let repositories = sqlx::query_as::<_, db::GithubRepository>(
         "SELECT * FROM github_repositories ORDER BY full_name",
@@ -118,8 +122,10 @@ async fn list_repositories(
 
 async fn get_repo_policy(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(repo_id): Path<i64>,
 ) -> Result<Json<RepositoryPolicyResponse>, PolicyRouteError> {
+    ensure_admin(&state, &headers)?;
     let pool = state.db.as_ref().ok_or(PolicyRouteError::NoDb)?;
     let repo = sqlx::query_as::<_, db::GithubRepository>(
         "SELECT * FROM github_repositories WHERE repository_id=$1 OR id=$1",
@@ -150,9 +156,11 @@ async fn get_repo_policy(
 
 async fn upsert_repo_policy(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(repo_id): Path<i64>,
     Json(req): Json<UpsertPolicyRequest>,
 ) -> Result<Json<RepositoryPolicyResponse>, PolicyRouteError> {
+    ensure_admin(&state, &headers)?;
     let pool = state.db.as_ref().ok_or(PolicyRouteError::NoDb)?;
     let repo = sqlx::query_as::<_, db::GithubRepository>(
         "SELECT * FROM github_repositories WHERE repository_id=$1 OR id=$1",
@@ -180,9 +188,11 @@ async fn upsert_repo_policy(
 
 async fn add_allowlist_subject(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(repo_id): Path<i64>,
     Json(req): Json<AllowlistRequest>,
 ) -> Result<Json<TrustedUserResponse>, PolicyRouteError> {
+    ensure_admin(&state, &headers)?;
     let pool = state.db.as_ref().ok_or(PolicyRouteError::NoDb)?;
     let repo = find_repo(pool, repo_id).await?;
     let user = req.user.trim();
@@ -208,14 +218,41 @@ async fn add_allowlist_subject(
 
 async fn remove_allowlist_subject(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path((repo_id, user_id)): Path<(i64, String)>,
 ) -> Result<StatusCode, PolicyRouteError> {
+    ensure_admin(&state, &headers)?;
     let pool = state.db.as_ref().ok_or(PolicyRouteError::NoDb)?;
     let repo = find_repo(pool, repo_id).await?;
     db::revoke_subject(pool, repo.repository_id, "github_user", &user_id)
         .await?
         .ok_or(PolicyRouteError::NotFound)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn ensure_admin(state: &AppState, headers: &HeaderMap) -> Result<(), PolicyRouteError> {
+    let Some(expected) = state.config.admin_api_token.as_deref() else {
+        return Ok(());
+    };
+    let Some(provided) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+    else {
+        return Err(PolicyRouteError::Unauthorized);
+    };
+    if constant_time_eq(provided.as_bytes(), expected.as_bytes()) {
+        Ok(())
+    } else {
+        Err(PolicyRouteError::Unauthorized)
+    }
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 async fn find_repo(
@@ -292,6 +329,8 @@ impl From<db::GithubRepository> for RepositorySummary {
 pub enum PolicyRouteError {
     #[error("database pool is not configured")]
     NoDb,
+    #[error("unauthorized")]
+    Unauthorized,
     #[error("repository not found")]
     NotFound,
     #[error("invalid policy document")]
@@ -306,6 +345,7 @@ impl IntoResponse for PolicyRouteError {
     fn into_response(self) -> Response {
         let (status, code) = match self {
             PolicyRouteError::NoDb => (StatusCode::SERVICE_UNAVAILABLE, "service_unavailable"),
+            PolicyRouteError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
             PolicyRouteError::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             PolicyRouteError::InvalidPolicy => (StatusCode::BAD_REQUEST, "invalid_policy"),
             PolicyRouteError::InvalidAllowlistUser => {
