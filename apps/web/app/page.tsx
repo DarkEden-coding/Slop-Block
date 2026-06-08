@@ -16,18 +16,21 @@ export default function Home() {
           Sign in with GitHub to manage installed projects, verification policies, CAPTCHA/OAuth requirements, labels, comments, and trusted contributor allowlists.
         </p>
 
-        <div className="mt-10 flex flex-wrap items-stretch gap-4">
+        <div className="mt-10 flex flex-wrap items-center gap-4">
           <AuthPanel />
-          <Link href="/dashboard" className="group flex min-w-64 items-center justify-between rounded-2xl border border-cyan-300/20 bg-cyan-300/10 px-6 py-5 font-bold text-white shadow-2xl shadow-cyan-950/40 backdrop-blur transition hover:-translate-y-0.5 hover:border-cyan-200/50 hover:bg-cyan-300/15">
+          <Link
+            href="/dashboard"
+            className="group inline-flex h-11 min-w-48 items-center justify-between gap-4 rounded-xl border border-cyan-300/20 bg-cyan-300/10 px-5 text-sm font-bold leading-none text-white shadow-2xl shadow-cyan-950/40 backdrop-blur transition hover:-translate-y-0.5 hover:border-cyan-200/50 hover:bg-cyan-300/15"
+          >
             Open dashboard <span className="text-cyan-200 transition group-hover:translate-x-1">→</span>
           </Link>
         </div>
 
         <div className="mt-16 grid gap-px overflow-hidden rounded-3xl border border-white/10 bg-white/10 shadow-2xl shadow-black/30 md:grid-cols-3">
           {features.map((title) => (
-            <div key={title} className="bg-slate-950/70 p-6 backdrop-blur">
-              <div className="mb-4 h-1 w-12 rounded-full bg-cyan-300 shadow-lg shadow-cyan-400/40" />
-              <p className="text-lg font-semibold text-slate-100">{title}</p>
+            <div key={title} className="flex min-h-[7.5rem] flex-col bg-slate-950/70 p-6 backdrop-blur">
+              <div className="mb-4 h-1 w-12 shrink-0 rounded-full bg-cyan-300 shadow-lg shadow-cyan-400/40" />
+              <p className="text-lg font-semibold leading-snug text-slate-100">{title}</p>
             </div>
           ))}
         </div>

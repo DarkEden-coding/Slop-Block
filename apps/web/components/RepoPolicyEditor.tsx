@@ -58,12 +58,12 @@ export function RepoPolicyEditor({ repoId }: { repoId: string }) {
         {boolFields.map(([key, label, help]) => {
           const checked = Boolean(policy[key]);
           return (
-            <label key={key} className="flex cursor-pointer items-center justify-between gap-5 bg-slate-950/40 p-4 transition hover:bg-white/[0.06]">
-              <span className="min-w-0">
+            <label key={key} className="flex cursor-pointer items-start justify-between gap-5 bg-slate-950/40 p-4 transition hover:bg-white/[0.06] sm:items-center">
+              <span className="min-w-0 pr-2">
                 <span className="block font-semibold text-white">{label}</span>
-                <span className="mt-1 block text-sm text-slate-400">{help}</span>
+                <span className="mt-1 block text-sm leading-relaxed text-slate-400">{help}</span>
               </span>
-              <span className={`relative h-7 w-12 shrink-0 rounded-full border transition ${checked ? "border-cyan-300/50 bg-cyan-300/80 shadow-lg shadow-cyan-500/20" : "border-white/15 bg-white/10"}`}>
+              <span className={`relative mt-0.5 h-7 w-12 shrink-0 rounded-full border transition sm:mt-0 ${checked ? "border-cyan-300/50 bg-cyan-300/80 shadow-lg shadow-cyan-500/20" : "border-white/15 bg-white/10"}`}>
                 <input type="checkbox" className="peer sr-only" checked={checked} onChange={() => toggle(key)} />
                 <span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition ${checked ? "left-6" : "left-1"}`} />
               </span>
@@ -75,13 +75,13 @@ export function RepoPolicyEditor({ repoId }: { repoId: string }) {
       <div className="mt-5 grid gap-4 md:grid-cols-2">
         <label className="block rounded-2xl border border-white/10 bg-slate-950/40 p-4">
           <span className="font-semibold text-white">Check mode</span>
-          <select className="mt-3 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-3 text-white outline-none ring-cyan-300/40 transition focus:ring-4" value={policy.check_mode} onChange={(e) => setPolicy((p) => ({ ...p, check_mode: e.target.value as RepoPolicy["check_mode"] }))}>
+          <select className="mt-3 h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 text-sm text-white outline-none ring-cyan-300/40 transition focus:ring-4" value={policy.check_mode} onChange={(e) => setPolicy((p) => ({ ...p, check_mode: e.target.value as RepoPolicy["check_mode"] }))}>
             <option value="enforce">Enforce</option><option value="audit">Audit only</option><option value="off">Off</option>
           </select>
         </label>
         <label className="block rounded-2xl border border-white/10 bg-slate-950/40 p-4">
           <span className="font-semibold text-white">Reverify after days</span>
-          <input type="number" min="1" className="mt-3 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-3 text-white outline-none ring-cyan-300/40 transition focus:ring-4" value={policy.reverify_after_days ?? ""} onChange={(e) => setPolicy((p) => ({ ...p, reverify_after_days: e.target.value ? Number(e.target.value) : null }))} />
+          <input type="number" min="1" className="mt-3 h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 text-sm text-white outline-none ring-cyan-300/40 transition focus:ring-4" value={policy.reverify_after_days ?? ""} onChange={(e) => setPolicy((p) => ({ ...p, reverify_after_days: e.target.value ? Number(e.target.value) : null }))} />
         </label>
       </div>
 
@@ -89,13 +89,13 @@ export function RepoPolicyEditor({ repoId }: { repoId: string }) {
         {labelFields.map(([key, label]) => (
           <label key={key} className="block rounded-2xl border border-white/10 bg-slate-950/40 p-4">
             <span className="font-semibold text-white">{label}</span>
-            <input className="mt-3 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-3 text-white outline-none ring-cyan-300/40 transition placeholder:text-slate-600 focus:ring-4" value={(policy[key] as string | null) ?? ""} onChange={(e) => setText(key, e.target.value)} />
+            <input className="mt-3 h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 text-sm text-white outline-none ring-cyan-300/40 transition placeholder:text-slate-600 focus:ring-4" value={(policy[key] as string | null) ?? ""} onChange={(e) => setText(key, e.target.value)} />
           </label>
         ))}
       </div>
 
       {error && <p className="mt-4 text-sm font-medium text-red-300">{error}</p>}{message && <p className="mt-4 text-sm font-medium text-emerald-300">{message}</p>}
-      <button onClick={save} disabled={saving} className="mt-6 rounded-xl bg-cyan-300 px-6 py-3 font-bold text-slate-950 shadow-xl shadow-cyan-950/30 transition hover:-translate-y-0.5 hover:bg-cyan-200 disabled:translate-y-0 disabled:opacity-60">{saving ? "Saving…" : "Save policy"}</button>
+      <button onClick={save} disabled={saving} className="mt-6 inline-flex h-11 items-center justify-center rounded-xl bg-cyan-300 px-6 text-sm font-bold leading-none text-slate-950 shadow-xl shadow-cyan-950/30 transition hover:-translate-y-0.5 hover:bg-cyan-200 disabled:translate-y-0 disabled:opacity-60">{saving ? "Saving…" : "Save policy"}</button>
     </section>
   );
 }

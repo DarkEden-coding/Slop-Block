@@ -23,11 +23,11 @@ export function InstallationsList() {
     <div className="overflow-hidden rounded-3xl border border-white/10 bg-white/[0.04] shadow-2xl shadow-black/30 backdrop-blur">
       {items.map((item) => (
         <div key={item.id} className="flex items-center justify-between gap-4 border-b border-white/10 p-5 last:border-b-0">
-          <div>
-            <h3 className="text-lg font-bold text-white">{item.account_login ?? `Installation ${item.id}`}</h3>
+          <div className="min-w-0 flex-1">
+            <h3 className="truncate text-lg font-bold text-white">{item.account_login ?? `Installation ${item.id}`}</h3>
             <p className="mt-1 text-sm text-slate-400">{item.account_type ?? item.target_type ?? "GitHub account"}</p>
           </div>
-          <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-3 py-1 text-sm font-semibold text-cyan-200">#{item.id}</span>
+          <span className="inline-flex shrink-0 items-center rounded-full border border-cyan-300/20 bg-cyan-300/10 px-3 py-1 text-sm font-semibold leading-none text-cyan-200">#{item.id}</span>
         </div>
       ))}
     </div>
