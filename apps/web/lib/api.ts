@@ -107,13 +107,16 @@ export type AuthMe = {
 
 export type VerifySession = {
   session_id: string;
-  status: "pending" | "verified" | "failed" | "expired" | string;
+  status: "pending" | "completed" | "verified" | "failed" | "expired" | string;
   repo?: string;
   github_login?: string;
   issue_or_pr_url?: string;
+  redirect_url?: string;
   oauth_url?: string;
   captcha_required?: boolean;
   oauth_required?: boolean;
+  oauth_verified?: boolean;
+  oauth_login?: string;
   captcha?: SessionCaptchaConfig | null;
   message?: string;
 };

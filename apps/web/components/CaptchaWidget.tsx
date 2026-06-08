@@ -87,7 +87,7 @@ function TurnstileWidget({ siteKey, onToken, onError }: Omit<ProviderWidgetProps
 
     widgetIdRef.current = window.turnstile.render(containerRef.current, {
       sitekey: siteKey,
-      theme: "light",
+      theme: "dark",
       callback: (token) => onTokenRef.current(token),
       "error-callback": () =>
         onErrorRef.current?.("Turnstile could not run. Disable ad blockers for this page and try again."),
@@ -229,11 +229,11 @@ export function CaptchaWidget({ config, onToken, onError }: CaptchaWidgetProps) 
 
   if (config.provider === "dev-bypass") {
     return (
-      <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-        Development bypass is enabled. Submit with token <code className="font-mono">dev-pass</code>.
+      <div className="rounded-2xl border border-amber-400/30 bg-amber-400/10 p-4 text-sm text-amber-100">
+        Development bypass is enabled. Submit with token <code className="font-mono text-amber-50">dev-pass</code>.
         <button
           type="button"
-          className="mt-3 block rounded-lg bg-amber-700 px-4 py-2 font-semibold text-white"
+          className="mt-3 block rounded-xl bg-amber-300 px-4 py-2 font-semibold text-slate-950"
           onClick={() => onToken("dev-pass", "dev-bypass")}
         >
           Use development bypass
@@ -247,10 +247,10 @@ export function CaptchaWidget({ config, onToken, onError }: CaptchaWidgetProps) 
   return (
     <div className="space-y-4">
       {providerOptions.length > 1 && (
-        <label className="block text-sm text-slate-600">
-          <span className="mb-2 block font-semibold text-slate-800">CAPTCHA provider</span>
+        <label className="block text-sm text-slate-400">
+          <span className="mb-2 block font-semibold text-slate-200">CAPTCHA provider</span>
           <select
-            className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900"
+            className="h-11 w-full rounded-xl border border-white/10 bg-slate-900/80 px-3 text-sm text-slate-100"
             value={selection.provider}
             onChange={(event) => {
               const provider = providerOptions.find((option) => option.id === event.target.value);

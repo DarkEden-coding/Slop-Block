@@ -333,6 +333,29 @@ pub async fn complete_verification_session(
     sqlx::query_as::<_, VerificationSession>("UPDATE verification_sessions SET status='completed', completed_at=now(), updated_at=now() WHERE public_id=$1 AND token_hash=$2 AND status='pending' RETURNING *").bind(public_id).bind(token_hash).fetch_optional(pool).await
 }
 
+pub async fn mark_verification_session_oauth_verified(
+    pool: &PgPool,
+    public_id: Uuid,
+    token_hash: &str,
+    oauth_login: &str,
+    oauth_user_id: i64,
+) -> Result<Option<VerificationSession>> {
+    let patch = serde_json::json!({
+        "oauth_verified": true,
+        "oauth_login": oauth_login,
+        "oauth_user_id": oauth_user_id,
+        "oauth_verified_at": OffsetDateTime::now_utc().unix_timestamp(),
+    });
+    sqlx::query_as::<_, VerificationSession>(
+        "UPDATE verification_sessions SET metadata = metadata || $3::jsonb, updated_at=now() WHERE public_id=$1 AND token_hash=$2 AND status='pending' RETURNING *",
+    )
+    .bind(public_id)
+    .bind(token_hash)
+    .bind(patch)
+    .fetch_optional(pool)
+    .await
+}
+
 pub async fn complete_pending_sessions_for_user(
     pool: &PgPool,
     repository_id: i64,

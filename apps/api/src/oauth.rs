@@ -65,6 +65,13 @@ struct VerifyResponse {
     oauth_url: Option<String>,
     captcha_required: bool,
     oauth_required: bool,
+    oauth_verified: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    oauth_login: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    issue_or_pr_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    redirect_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     captcha: Option<SessionCaptchaConfig>,
 }
@@ -74,29 +81,93 @@ pub struct StateCookie {
     pub session_id: Uuid,
     pub token_hash: String,
     pub state: String,
+    pub session_token: String,
 }
 
 pub fn token_hash(token: &str) -> String {
     hex::encode(Sha256::digest(token.as_bytes()))
 }
 
-pub fn encode_state_cookie(session_id: Uuid, token_hash: &str, state: &str) -> String {
-    format!("{session_id}:{token_hash}:{state}")
+pub fn encode_state_cookie(session_id: Uuid, token_hash: &str, state: &str, session_token: &str) -> String {
+    format!("{session_id}:{token_hash}:{state}:{session_token}")
 }
 
 pub fn parse_state_cookie(value: &str, expected_state: &str) -> Option<StateCookie> {
-    let mut parts = value.split(':');
+    let mut parts = value.splitn(4, ':');
     let session_id = parts.next()?.parse().ok()?;
     let token_hash = parts.next()?.to_string();
     let state = parts.next()?.to_string();
-    if parts.next().is_some() || state != expected_state || token_hash.len() != 64 {
+    let session_token = parts.next()?.to_string();
+    if state != expected_state || token_hash.len() != 64 || session_token.is_empty() {
         return None;
     }
     Some(StateCookie {
         session_id,
         token_hash,
         state,
+        session_token,
     })
+}
+
+fn session_oauth_verified(metadata: &serde_json::Value) -> bool {
+    metadata
+        .get("oauth_verified")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+}
+
+fn subject_url(repo_full_name: &str, subject_type: &str, subject_id: &str) -> Option<String> {
+    let (owner, name) = repo_full_name.split_once('/')?;
+    let path = match subject_type {
+        "pull_request" => format!("pull/{subject_id}"),
+        "issue" => format!("issues/{subject_id}"),
+        _ => return None,
+    };
+    Some(format!("https://github.com/{owner}/{name}/{path}"))
+}
+
+fn verify_response(
+    session_id: Uuid,
+    session: &db::VerificationSession,
+    repo: Option<String>,
+    oauth_url: Option<String>,
+    captcha: Option<SessionCaptchaConfig>,
+) -> VerifyResponse {
+    let oauth_verified = session_oauth_verified(&session.metadata);
+    let expected_login = session
+        .metadata
+        .get("login")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    let oauth_login = if oauth_verified {
+        session
+            .metadata
+            .get("oauth_login")
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+    } else {
+        None
+    };
+    let issue_or_pr_url = repo
+        .as_deref()
+        .and_then(|full_name| subject_url(full_name, &session.subject_type, &session.subject_id));
+    VerifyResponse {
+        session_id,
+        status: session.status.clone(),
+        subject_type: session.subject_type.clone(),
+        subject_id: session.subject_id.clone(),
+        expires_at: session.expires_at.unix_timestamp(),
+        repo,
+        github_login: expected_login,
+        oauth_url,
+        captcha_required: captcha.is_some() && oauth_verified,
+        oauth_required: !oauth_verified,
+        oauth_verified,
+        oauth_login,
+        issue_or_pr_url: issue_or_pr_url.clone(),
+        redirect_url: issue_or_pr_url,
+        captcha: if oauth_verified { captcha } else { None },
+    }
 }
 
 fn random_state() -> String {
@@ -126,7 +197,7 @@ async fn oauth_start(
     let cookie = format!(
         "{}={}; Path=/api/github/oauth; HttpOnly; SameSite=Lax; Max-Age=600{}",
         OAUTH_COOKIE,
-        encode_state_cookie(q.session_id, &hash, &st),
+        encode_state_cookie(q.session_id, &hash, &st, &q.token),
         if state.config.cookie_secure {
             "; Secure"
         } else {
@@ -152,7 +223,18 @@ async fn oauth_callback(
     Query(q): Query<CallbackQuery>,
 ) -> Result<Response, OAuthError> {
     if q.error.is_some() {
-        return Ok(redirect_web(&state, "error", "oauth_denied"));
+        if let Some(raw_cookie) = find_cookie(&headers, OAUTH_COOKIE) {
+            if let Some(sc) = parse_state_cookie(&raw_cookie, q.state.as_deref().unwrap_or("")) {
+                return Ok(redirect_verify(
+                    &state,
+                    sc.session_id,
+                    &sc.session_token,
+                    "error",
+                    "oauth_denied",
+                ));
+            }
+        }
+        return Ok(redirect_verify_error(&state, "oauth_denied"));
     }
     let code = q.code.ok_or(OAuthError::BadRequest)?;
     let st = q.state.ok_or(OAuthError::BadRequest)?;
@@ -197,9 +279,40 @@ async fn oauth_callback(
         .github_user_id
         .is_some_and(|id| id != user.id as i64)
     {
-        return Ok(redirect_web(&state, "error", "github_user_mismatch"));
+        return Ok(redirect_verify(
+            &state,
+            sc.session_id,
+            &sc.session_token,
+            "error",
+            "github_user_mismatch",
+        ));
     }
-    Ok(redirect_web(&state, "success", "oauth_verified"))
+    if let Some(expected_login) = session.metadata.get("login").and_then(|value| value.as_str()) {
+        if !expected_login.eq_ignore_ascii_case(&user.login) {
+            return Ok(redirect_verify(
+                &state,
+                sc.session_id,
+                &sc.session_token,
+                "error",
+                "github_user_mismatch",
+            ));
+        }
+    }
+    db::mark_verification_session_oauth_verified(
+        pool,
+        sc.session_id,
+        &sc.token_hash,
+        &user.login,
+        user.id as i64,
+    )
+    .await?;
+    Ok(redirect_verify(
+        &state,
+        sc.session_id,
+        &sc.session_token,
+        "continue",
+        "oauth_verified",
+    ))
 }
 
 async fn get_verify(
@@ -220,28 +333,17 @@ async fn get_verify(
     let repo = db::get_repository(pool, s.repository_id)
         .await?
         .map(|repo| repo.full_name);
-    let github_login = s
-        .metadata
-        .get("login")
-        .and_then(|value| value.as_str())
-        .map(str::to_string);
     let oauth_url = format!(
         "{}/api/github/oauth/start?session_id={session_id}&token={token}",
         state.config.api_base_url.trim_end_matches('/')
     );
-    Ok(Json(VerifyResponse {
+    Ok(Json(verify_response(
         session_id,
-        status: s.status,
-        subject_type: s.subject_type,
-        subject_id: s.subject_id,
-        expires_at: s.expires_at.unix_timestamp(),
+        &s,
         repo,
-        github_login,
-        oauth_url: Some(oauth_url),
-        captcha_required: captcha.is_some(),
-        oauth_required: true,
+        Some(oauth_url),
         captcha,
-    }))
+    )))
 }
 
 async fn post_captcha(
@@ -256,6 +358,9 @@ async fn post_captcha(
         .ok_or(OAuthError::NotFound)?;
     if s.status != "pending" || s.expires_at <= OffsetDateTime::now_utc() {
         return Err(OAuthError::InvalidSession);
+    }
+    if !session_oauth_verified(&s.metadata) {
+        return Err(OAuthError::OAuthRequired);
     }
     let policy = load_repo_policy(pool, s.repository_id).await;
     let settings = captcha_config::load_settings(&state).await;
@@ -283,19 +388,10 @@ async fn post_captcha(
         .await?
         .ok_or(OAuthError::InvalidSession)?;
     finalize(&state, &done).await;
-    Ok(Json(VerifyResponse {
-        session_id,
-        status: done.status,
-        subject_type: done.subject_type,
-        subject_id: done.subject_id,
-        expires_at: done.expires_at.unix_timestamp(),
-        repo: None,
-        github_login: None,
-        oauth_url: None,
-        captcha_required: false,
-        oauth_required: true,
-        captcha: None,
-    }))
+    let repo = db::get_repository(pool, done.repository_id)
+        .await?
+        .map(|repo| repo.full_name);
+    Ok(Json(verify_response(session_id, &done, repo, None, None)))
 }
 
 async fn load_repo_policy(pool: &db::PgPool, repository_id: i64) -> VerificationPolicy {
@@ -430,12 +526,26 @@ fn find_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
         .find_map(|c| c.strip_prefix(&format!("{name}=")).map(ToOwned::to_owned))
 }
 
-fn redirect_web(state: &AppState, status: &str, code: &str) -> Response {
+fn redirect_verify(
+    state: &AppState,
+    session_id: Uuid,
+    token: &str,
+    page: &str,
+    code: &str,
+) -> Response {
+    let web = state.config.web_base_url.trim_end_matches('/');
+    let url = if page == "continue" {
+        format!("{web}/verify/{session_id}?token={token}&oauth={code}")
+    } else {
+        format!("{web}/verify/{session_id}/{page}?token={token}&code={code}")
+    };
+    Redirect::temporary(&url).into_response()
+}
+
+fn redirect_verify_error(state: &AppState, code: &str) -> Response {
     Redirect::temporary(&format!(
-        "{}/verify/{}?code={}",
-        state.config.web_base_url.trim_end_matches('/'),
-        status,
-        code
+        "{}/verify/error?code={code}",
+        state.config.web_base_url.trim_end_matches('/')
     ))
     .into_response()
 }
@@ -454,6 +564,8 @@ enum OAuthError {
     InvalidSession,
     #[error("captcha failed")]
     CaptchaFailed,
+    #[error("github oauth required")]
+    OAuthRequired,
     #[error("upstream error")]
     Upstream,
     #[error("database error")]
@@ -469,7 +581,8 @@ impl IntoResponse for OAuthError {
             OAuthError::BadRequest
             | OAuthError::InvalidState
             | OAuthError::InvalidSession
-            | OAuthError::CaptchaFailed => StatusCode::BAD_REQUEST,
+            | OAuthError::CaptchaFailed
+            | OAuthError::OAuthRequired => StatusCode::BAD_REQUEST,
             OAuthError::NotConfigured | OAuthError::Captcha(captcha::CaptchaError::NotConfigured) => {
                 StatusCode::SERVICE_UNAVAILABLE
             }
@@ -486,11 +599,10 @@ mod tests {
     fn state_cookie_round_trip_and_rejects_bad_state() {
         let id = Uuid::new_v4();
         let hash = token_hash("secret-token");
-        let value = encode_state_cookie(id, &hash, "state-1");
-        assert_eq!(
-            parse_state_cookie(&value, "state-1").unwrap().session_id,
-            id
-        );
+        let value = encode_state_cookie(id, &hash, "state-1", "session-token");
+        let parsed = parse_state_cookie(&value, "state-1").unwrap();
+        assert_eq!(parsed.session_id, id);
+        assert_eq!(parsed.session_token, "session-token");
         assert!(parse_state_cookie(&value, "other").is_none());
     }
     #[test]
