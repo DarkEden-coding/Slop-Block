@@ -16,20 +16,21 @@ export function ReposList() {
       .finally(() => setLoading(false));
   }, []);
 
-  if (loading) return <div className="rounded-xl border p-6 text-slate-600">Loading repositories…</div>;
-  if (error) return <div className="rounded-xl border border-red-200 bg-red-50 p-6 text-red-800">Could not load repositories: {error}</div>;
-  if (!repos.length) return <div className="rounded-xl border p-6 text-slate-600">No repositories are available yet.</div>;
+  if (loading) return <div className="rounded-2xl border border-white/10 bg-white/5 p-6 text-slate-300 shadow-xl shadow-black/20">Loading repositories…</div>;
+  if (error) return <div className="rounded-2xl border border-red-400/30 bg-red-950/40 p-6 text-red-100 shadow-xl shadow-black/20">Could not load repositories: {error}</div>;
+  if (!repos.length) return <div className="rounded-2xl border border-white/10 bg-white/5 p-6 text-slate-300 shadow-xl shadow-black/20">No repositories are available yet.</div>;
 
   return (
-    <div className="grid gap-4 md:grid-cols-2">
+    <div className="overflow-hidden rounded-3xl border border-white/10 bg-white/[0.04] shadow-2xl shadow-black/30 backdrop-blur">
       {repos.map((repo) => (
-        <Link key={repo.id} href={`/dashboard/repos/${repo.id}`} className="rounded-xl border bg-white p-5 shadow-sm transition hover:border-cyan-300 hover:shadow-md">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <h3 className="font-semibold text-slate-950">{repo.full_name ?? repo.name}</h3>
-              <p className="mt-1 text-sm text-slate-600">Configure verification policy</p>
-            </div>
-            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-700">{repo.private ? "Private" : "Public"}</span>
+        <Link key={repo.id} href={`/dashboard/repos/${repo.id}`} className="group flex items-center justify-between gap-5 border-b border-white/10 p-5 transition last:border-b-0 hover:bg-cyan-300/10">
+          <div className="min-w-0">
+            <h3 className="truncate text-lg font-bold text-white">{repo.full_name ?? repo.name}</h3>
+            <p className="mt-1 text-sm text-slate-400">Configure verification policy</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-slate-300">{repo.private ? "Private" : "Public"}</span>
+            <span className="text-cyan-300 transition group-hover:translate-x-1">→</span>
           </div>
         </Link>
       ))}

@@ -46,39 +46,56 @@ export function RepoPolicyEditor({ repoId }: { repoId: string }) {
   const toggle = (key: keyof RepoPolicy) => setPolicy((p) => ({ ...p, [key]: !p[key] }));
   const setText = (key: keyof RepoPolicy, value: string) => setPolicy((p) => ({ ...p, [key]: value.trim() ? value : null }));
 
-  if (loading) return <div className="rounded-xl border p-6 text-slate-600">Loading policy…</div>;
+  if (loading) return <div className="rounded-2xl border border-white/10 bg-white/5 p-6 text-slate-300 shadow-xl shadow-black/20">Loading policy…</div>;
 
   return (
-    <div className="rounded-2xl border bg-white p-6 shadow-sm">
-      <div className="mb-5 rounded-lg bg-cyan-50 p-4 text-sm text-cyan-900">
+    <section className="rounded-3xl border border-white/10 bg-white/[0.04] p-6 shadow-2xl shadow-black/30 backdrop-blur">
+      <div className="mb-6 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-4 text-sm leading-6 text-cyan-100 shadow-lg shadow-cyan-950/20">
         Defaults verify both issues and pull requests and post a GitHub comment with the verification link.
       </div>
-      <div className="space-y-4">
-        {boolFields.map(([key, label, help]) => (
-          <label key={key} className="flex items-center justify-between gap-4 rounded-lg border p-4">
-            <span><span className="block font-medium text-slate-800">{label}</span><span className="text-sm text-slate-500">{help}</span></span>
-            <input type="checkbox" className="h-5 w-5" checked={Boolean(policy[key])} onChange={() => toggle(key)} />
-          </label>
-        ))}
-        <label className="block rounded-lg border p-4">
-          <span className="font-medium text-slate-800">Check mode</span>
-          <select className="mt-2 w-full rounded-md border px-3 py-2" value={policy.check_mode} onChange={(e) => setPolicy((p) => ({ ...p, check_mode: e.target.value as RepoPolicy["check_mode"] }))}>
+
+      <div className="divide-y divide-white/10 overflow-hidden rounded-2xl border border-white/10">
+        {boolFields.map(([key, label, help]) => {
+          const checked = Boolean(policy[key]);
+          return (
+            <label key={key} className="flex cursor-pointer items-center justify-between gap-5 bg-slate-950/40 p-4 transition hover:bg-white/[0.06]">
+              <span className="min-w-0">
+                <span className="block font-semibold text-white">{label}</span>
+                <span className="mt-1 block text-sm text-slate-400">{help}</span>
+              </span>
+              <span className={`relative h-7 w-12 shrink-0 rounded-full border transition ${checked ? "border-cyan-300/50 bg-cyan-300/80 shadow-lg shadow-cyan-500/20" : "border-white/15 bg-white/10"}`}>
+                <input type="checkbox" className="peer sr-only" checked={checked} onChange={() => toggle(key)} />
+                <span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition ${checked ? "left-6" : "left-1"}`} />
+              </span>
+            </label>
+          );
+        })}
+      </div>
+
+      <div className="mt-5 grid gap-4 md:grid-cols-2">
+        <label className="block rounded-2xl border border-white/10 bg-slate-950/40 p-4">
+          <span className="font-semibold text-white">Check mode</span>
+          <select className="mt-3 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-3 text-white outline-none ring-cyan-300/40 transition focus:ring-4" value={policy.check_mode} onChange={(e) => setPolicy((p) => ({ ...p, check_mode: e.target.value as RepoPolicy["check_mode"] }))}>
             <option value="enforce">Enforce</option><option value="audit">Audit only</option><option value="off">Off</option>
           </select>
         </label>
-        <label className="block rounded-lg border p-4">
-          <span className="font-medium text-slate-800">Reverify after days</span>
-          <input type="number" min="1" className="mt-2 w-full rounded-md border px-3 py-2" value={policy.reverify_after_days ?? ""} onChange={(e) => setPolicy((p) => ({ ...p, reverify_after_days: e.target.value ? Number(e.target.value) : null }))} />
+        <label className="block rounded-2xl border border-white/10 bg-slate-950/40 p-4">
+          <span className="font-semibold text-white">Reverify after days</span>
+          <input type="number" min="1" className="mt-3 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-3 text-white outline-none ring-cyan-300/40 transition focus:ring-4" value={policy.reverify_after_days ?? ""} onChange={(e) => setPolicy((p) => ({ ...p, reverify_after_days: e.target.value ? Number(e.target.value) : null }))} />
         </label>
+      </div>
+
+      <div className="mt-5 grid gap-4 md:grid-cols-3">
         {labelFields.map(([key, label]) => (
-          <label key={key} className="block rounded-lg border p-4">
-            <span className="font-medium text-slate-800">{label}</span>
-            <input className="mt-2 w-full rounded-md border px-3 py-2" value={(policy[key] as string | null) ?? ""} onChange={(e) => setText(key, e.target.value)} />
+          <label key={key} className="block rounded-2xl border border-white/10 bg-slate-950/40 p-4">
+            <span className="font-semibold text-white">{label}</span>
+            <input className="mt-3 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-3 text-white outline-none ring-cyan-300/40 transition placeholder:text-slate-600 focus:ring-4" value={(policy[key] as string | null) ?? ""} onChange={(e) => setText(key, e.target.value)} />
           </label>
         ))}
       </div>
-      {error && <p className="mt-4 text-sm text-red-700">{error}</p>}{message && <p className="mt-4 text-sm text-green-700">{message}</p>}
-      <button onClick={save} disabled={saving} className="mt-6 rounded-lg bg-slate-950 px-5 py-3 font-semibold text-white disabled:opacity-60">{saving ? "Saving…" : "Save policy"}</button>
-    </div>
+
+      {error && <p className="mt-4 text-sm font-medium text-red-300">{error}</p>}{message && <p className="mt-4 text-sm font-medium text-emerald-300">{message}</p>}
+      <button onClick={save} disabled={saving} className="mt-6 rounded-xl bg-cyan-300 px-6 py-3 font-bold text-slate-950 shadow-xl shadow-cyan-950/30 transition hover:-translate-y-0.5 hover:bg-cyan-200 disabled:translate-y-0 disabled:opacity-60">{saving ? "Saving…" : "Save policy"}</button>
+    </section>
   );
 }

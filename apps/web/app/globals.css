@@ -3,9 +3,18 @@
 @tailwind utilities;
 
 :root {
-  color-scheme: light;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
 }
 
 body {
   margin: 0;
+  background: #020617;
+}
+
+::selection {
+  background: rgba(103, 232, 249, 0.35);
 }

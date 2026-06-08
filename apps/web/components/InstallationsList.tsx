@@ -15,21 +15,19 @@ export function InstallationsList() {
       .finally(() => setLoading(false));
   }, []);
 
-  if (loading) return <div className="rounded-xl border p-6 text-slate-600">Loading installations…</div>;
-  if (error) return <div className="rounded-xl border border-red-200 bg-red-50 p-6 text-red-800">Could not load installations: {error}</div>;
-  if (!items.length) return <div className="rounded-xl border p-6 text-slate-600">No GitHub App installations were found.</div>;
+  if (loading) return <div className="rounded-2xl border border-white/10 bg-white/5 p-6 text-slate-300 shadow-xl shadow-black/20">Loading installations…</div>;
+  if (error) return <div className="rounded-2xl border border-red-400/30 bg-red-950/40 p-6 text-red-100 shadow-xl shadow-black/20">Could not load installations: {error}</div>;
+  if (!items.length) return <div className="rounded-2xl border border-white/10 bg-white/5 p-6 text-slate-300 shadow-xl shadow-black/20">No GitHub App installations were found.</div>;
 
   return (
-    <div className="grid gap-4">
+    <div className="overflow-hidden rounded-3xl border border-white/10 bg-white/[0.04] shadow-2xl shadow-black/30 backdrop-blur">
       {items.map((item) => (
-        <div key={item.id} className="rounded-xl border bg-white p-5 shadow-sm">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <h3 className="font-semibold text-slate-950">{item.account_login ?? `Installation ${item.id}`}</h3>
-              <p className="text-sm text-slate-600">{item.account_type ?? item.target_type ?? "GitHub account"}</p>
-            </div>
-            <span className="rounded-full bg-cyan-50 px-3 py-1 text-sm text-cyan-700">#{item.id}</span>
+        <div key={item.id} className="flex items-center justify-between gap-4 border-b border-white/10 p-5 last:border-b-0">
+          <div>
+            <h3 className="text-lg font-bold text-white">{item.account_login ?? `Installation ${item.id}`}</h3>
+            <p className="mt-1 text-sm text-slate-400">{item.account_type ?? item.target_type ?? "GitHub account"}</p>
           </div>
+          <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-3 py-1 text-sm font-semibold text-cyan-200">#{item.id}</span>
         </div>
       ))}
     </div>
