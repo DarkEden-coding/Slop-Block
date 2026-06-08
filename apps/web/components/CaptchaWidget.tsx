@@ -4,28 +4,43 @@ import Script from "next/script";
 import { useEffect, useRef, useState } from "react";
 import type { CaptchaPublicProvider, SessionCaptchaConfig } from "../lib/api";
 
+const TURNSTILE_SCRIPT = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+const HCAPTCHA_SCRIPT = "https://js.hcaptcha.com/1/api.js?render=explicit";
+const RECAPTCHA_SCRIPT = "https://www.google.com/recaptcha/api.js?render=explicit";
+
 declare global {
   interface Window {
     turnstile?: {
-      render: (el: HTMLElement | string, opts: { sitekey: string; callback: (token: string) => void }) => string;
-      remove?: (widgetId: string) => void;
+      ready: (callback: () => void) => void;
+      render: (
+        el: HTMLElement | string,
+        opts: {
+          sitekey: string;
+          theme?: "light" | "dark" | "auto";
+          callback?: (token: string) => void;
+          "error-callback"?: () => void;
+          "expired-callback"?: () => void;
+        },
+      ) => string;
+      remove: (widgetId: string) => void;
     };
     hcaptcha?: {
-      render: (el: HTMLElement | string, opts: { sitekey: string; callback: (token: string) => void }) => string;
+      render: (
+        el: HTMLElement | string,
+        opts: { sitekey: string; callback: (token: string) => void },
+      ) => string;
       remove?: (widgetId: string) => void;
     };
     grecaptcha?: {
-      render: (el: HTMLElement | string, opts: { sitekey: string; callback: (token: string) => void }) => number;
+      ready: (callback: () => void) => void;
+      render: (
+        el: HTMLElement | string,
+        opts: { sitekey: string; callback: (token: string) => void },
+      ) => number;
       reset?: (widgetId?: number) => void;
     };
   }
 }
-
-const SCRIPT_BY_PROVIDER: Record<string, string> = {
-  "cloudflare-turnstile": "https://challenges.cloudflare.com/turnstile/v0/api.js",
-  hcaptcha: "https://js.hcaptcha.com/1/api.js",
-  "google-recaptcha-v2": "https://www.google.com/recaptcha/api.js",
-};
 
 type CaptchaWidgetProps = {
   config: SessionCaptchaConfig;
@@ -33,63 +48,178 @@ type CaptchaWidgetProps = {
   onError?: (message: string) => void;
 };
 
-export function CaptchaWidget({ config, onToken, onError }: CaptchaWidgetProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const widgetIdRef = useRef<string | number | null>(null);
-  const [activeProvider, setActiveProvider] = useState(config.provider);
-  const [activeSiteKey, setActiveSiteKey] = useState(config.site_key);
-  const [scriptReady, setScriptReady] = useState(false);
+type ProviderWidgetProps = {
+  siteKey: string;
+  providerId: string;
+  onToken: (token: string) => void;
+  onError?: (message: string) => void;
+};
 
+function useStableHandler<T extends (...args: never[]) => void>(handler: T) {
+  const handlerRef = useRef(handler);
+  handlerRef.current = handler;
+  return handlerRef;
+}
+
+function TurnstileWidget({ siteKey, onToken, onError }: Omit<ProviderWidgetProps, "providerId">) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const widgetIdRef = useRef<string | null>(null);
+  const onTokenRef = useStableHandler(onToken);
+  const onErrorRef = useStableHandler(onError ?? (() => undefined));
+  const [scriptReady, setScriptReady] = useState(
+    () => typeof window !== "undefined" && typeof window.turnstile !== "undefined",
+  );
+
+  useEffect(() => {
+    if (!scriptReady || !containerRef.current) return;
+
+    let cancelled = false;
+
+    const mount = () => {
+      if (cancelled || !containerRef.current || !window.turnstile) return;
+      if (widgetIdRef.current) {
+        window.turnstile.remove(widgetIdRef.current);
+        widgetIdRef.current = null;
+      }
+      widgetIdRef.current = window.turnstile.render(containerRef.current, {
+        sitekey: siteKey,
+        theme: "light",
+        callback: (token) => onTokenRef.current(token),
+        "error-callback": () =>
+          onErrorRef.current?.("Turnstile could not run. Disable ad blockers for this page and try again."),
+        "expired-callback": () =>
+          onErrorRef.current?.("Turnstile expired. Complete the challenge again."),
+      });
+    };
+
+    window.turnstile?.ready(mount);
+
+    return () => {
+      cancelled = true;
+      if (widgetIdRef.current && window.turnstile) {
+        window.turnstile.remove(widgetIdRef.current);
+        widgetIdRef.current = null;
+      }
+    };
+  }, [scriptReady, siteKey, onErrorRef, onTokenRef]);
+
+  return (
+    <>
+      <Script
+        src={TURNSTILE_SCRIPT}
+        strategy="afterInteractive"
+        onLoad={() => setScriptReady(true)}
+        onError={() => onErrorRef.current?.("Failed to load Cloudflare Turnstile.")}
+      />
+      <div ref={containerRef} className="min-h-[65px]" />
+    </>
+  );
+}
+
+function HCaptchaWidget({ siteKey, onToken, onError }: Omit<ProviderWidgetProps, "providerId">) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const widgetIdRef = useRef<string | null>(null);
+  const onTokenRef = useStableHandler(onToken);
+  const onErrorRef = useStableHandler(onError ?? (() => undefined));
+  const [scriptReady, setScriptReady] = useState(
+    () => typeof window !== "undefined" && typeof window.hcaptcha !== "undefined",
+  );
+
+  useEffect(() => {
+    if (!scriptReady || !containerRef.current || !window.hcaptcha) return;
+    if (widgetIdRef.current) {
+      window.hcaptcha.remove?.(widgetIdRef.current);
+      widgetIdRef.current = null;
+    }
+    widgetIdRef.current = window.hcaptcha.render(containerRef.current, {
+      sitekey: siteKey,
+      callback: (token) => onTokenRef.current(token),
+    });
+    return () => {
+      if (widgetIdRef.current && window.hcaptcha?.remove) {
+        window.hcaptcha.remove(widgetIdRef.current);
+        widgetIdRef.current = null;
+      }
+    };
+  }, [scriptReady, siteKey, onTokenRef]);
+
+  return (
+    <>
+      <Script
+        src={HCAPTCHA_SCRIPT}
+        strategy="afterInteractive"
+        onLoad={() => setScriptReady(true)}
+        onError={() => onErrorRef.current?.("Failed to load hCaptcha.")}
+      />
+      <div ref={containerRef} className="min-h-[65px]" />
+    </>
+  );
+}
+
+function RecaptchaWidget({ siteKey, onToken, onError }: Omit<ProviderWidgetProps, "providerId">) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const widgetIdRef = useRef<number | null>(null);
+  const onTokenRef = useStableHandler(onToken);
+  const onErrorRef = useStableHandler(onError ?? (() => undefined));
+  const [scriptReady, setScriptReady] = useState(
+    () => typeof window !== "undefined" && typeof window.grecaptcha !== "undefined",
+  );
+
+  useEffect(() => {
+    if (!scriptReady || !containerRef.current || !window.grecaptcha) return;
+
+    let cancelled = false;
+    const mount = () => {
+      if (cancelled || !containerRef.current || !window.grecaptcha) return;
+      if (widgetIdRef.current !== null) {
+        window.grecaptcha.reset?.(widgetIdRef.current);
+        widgetIdRef.current = null;
+      }
+      widgetIdRef.current = window.grecaptcha.render(containerRef.current, {
+        sitekey: siteKey,
+        callback: (token) => onTokenRef.current(token),
+      });
+    };
+
+    window.grecaptcha.ready(mount);
+
+    return () => {
+      cancelled = true;
+      widgetIdRef.current = null;
+    };
+  }, [scriptReady, siteKey, onTokenRef]);
+
+  return (
+    <>
+      <Script
+        src={RECAPTCHA_SCRIPT}
+        strategy="afterInteractive"
+        onLoad={() => setScriptReady(true)}
+        onError={() => onErrorRef.current?.("Failed to load Google reCAPTCHA.")}
+      />
+      <div ref={containerRef} className="min-h-[65px]" />
+    </>
+  );
+}
+
+export function CaptchaWidget({ config, onToken, onError }: CaptchaWidgetProps) {
   const providerOptions: CaptchaPublicProvider[] = [
     { id: config.provider, label: config.label, site_key: config.site_key },
     ...(config.alternate_providers ?? []),
   ];
+  const [selection, setSelection] = useState({
+    provider: config.provider,
+    siteKey: config.site_key,
+    label: config.label,
+  });
 
   useEffect(() => {
-    setActiveProvider(config.provider);
-    setActiveSiteKey(config.site_key);
-    setScriptReady(false);
-    widgetIdRef.current = null;
+    setSelection({
+      provider: config.provider,
+      siteKey: config.site_key,
+      label: config.label,
+    });
   }, [config]);
-
-  useEffect(() => {
-    if (!scriptReady || !containerRef.current || !activeSiteKey) return;
-    const container = containerRef.current;
-    container.innerHTML = "";
-
-    if (activeProvider === "cloudflare-turnstile" && window.turnstile) {
-      widgetIdRef.current = window.turnstile.render(container, {
-        sitekey: activeSiteKey,
-        callback: (token) => onToken(token, activeProvider),
-      });
-      return;
-    }
-
-    if (activeProvider === "hcaptcha" && window.hcaptcha) {
-      widgetIdRef.current = window.hcaptcha.render(container, {
-        sitekey: activeSiteKey,
-        callback: (token) => onToken(token, activeProvider),
-      });
-      return;
-    }
-
-    if (activeProvider === "google-recaptcha-v2" && window.grecaptcha) {
-      widgetIdRef.current = window.grecaptcha.render(container, {
-        sitekey: activeSiteKey,
-        callback: (token) => onToken(token, activeProvider),
-      });
-      return;
-    }
-
-    onError?.("CAPTCHA widget failed to load.");
-  }, [activeProvider, activeSiteKey, onError, onToken, scriptReady]);
-
-  function switchProvider(provider: CaptchaPublicProvider) {
-    setScriptReady(false);
-    widgetIdRef.current = null;
-    setActiveProvider(provider.id);
-    setActiveSiteKey(provider.site_key);
-  }
 
   if (config.provider === "dev-bypass") {
     return (
@@ -106,7 +236,7 @@ export function CaptchaWidget({ config, onToken, onError }: CaptchaWidgetProps) 
     );
   }
 
-  const scriptSrc = SCRIPT_BY_PROVIDER[activeProvider];
+  const widgetKey = `${selection.provider}:${selection.siteKey}`;
 
   return (
     <div className="space-y-4">
@@ -115,10 +245,15 @@ export function CaptchaWidget({ config, onToken, onError }: CaptchaWidgetProps) 
           <span className="mb-2 block font-semibold text-slate-800">CAPTCHA provider</span>
           <select
             className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900"
-            value={activeProvider}
+            value={selection.provider}
             onChange={(event) => {
               const provider = providerOptions.find((option) => option.id === event.target.value);
-              if (provider) switchProvider(provider);
+              if (!provider) return;
+              setSelection({
+                provider: provider.id,
+                siteKey: provider.site_key,
+                label: provider.label,
+              });
             }}
           >
             {providerOptions.map((provider) => (
@@ -129,15 +264,31 @@ export function CaptchaWidget({ config, onToken, onError }: CaptchaWidgetProps) 
           </select>
         </label>
       )}
-      {scriptSrc && (
-        <Script
-          key={activeProvider}
-          src={scriptSrc}
-          onLoad={() => setScriptReady(true)}
-          onError={() => onError?.("Failed to load CAPTCHA provider script.")}
+
+      {selection.provider === "cloudflare-turnstile" && (
+        <TurnstileWidget
+          key={widgetKey}
+          siteKey={selection.siteKey}
+          onToken={(token) => onToken(token, selection.provider)}
+          onError={onError}
         />
       )}
-      <div ref={containerRef} className="min-h-16" />
+      {selection.provider === "hcaptcha" && (
+        <HCaptchaWidget
+          key={widgetKey}
+          siteKey={selection.siteKey}
+          onToken={(token) => onToken(token, selection.provider)}
+          onError={onError}
+        />
+      )}
+      {selection.provider === "google-recaptcha-v2" && (
+        <RecaptchaWidget
+          key={widgetKey}
+          siteKey={selection.siteKey}
+          onToken={(token) => onToken(token, selection.provider)}
+          onError={onError}
+        />
+      )}
     </div>
   );
 }

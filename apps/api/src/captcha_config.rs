@@ -104,52 +104,57 @@ struct ResolvedProvider {
     credentials: Option<ProviderCredentials>,
 }
 
-fn env_credentials(config: &Config, provider_id: &str) -> Option<ProviderCredentials> {
-    let (site_key, secret) = match provider_id {
-        PROVIDER_CLOUDFLARE_TURNSTILE => (
-            config.turnstile_site_key.as_deref(),
-            config.turnstile_secret.as_deref(),
-        ),
-        PROVIDER_HCAPTCHA => (
-            config.hcaptcha_site_key.as_deref(),
-            config.hcaptcha_secret.as_deref(),
-        ),
-        PROVIDER_GOOGLE_RECAPTCHA_V2 => (
-            config.recaptcha_site_key.as_deref(),
-            config.recaptcha_secret.as_deref(),
-        ),
-        _ => return None,
-    };
-    let site_key = site_key.filter(|value| !value.is_empty())?;
-    let secret = secret.filter(|value| !value.is_empty())?;
-    Some(ProviderCredentials {
-        site_key: site_key.to_string(),
-        secret: secret.to_string(),
-        source: CredentialsSource::Environment,
-    })
+fn stored_field(stored: Option<&Value>, provider_id: &str, field: &str) -> Option<String> {
+    stored?
+        .get("providers")?
+        .get(provider_id)?
+        .get(field)?
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
-fn stored_provider_credentials(stored: Option<&Value>, provider_id: &str) -> Option<ProviderCredentials> {
-    let provider = stored?
-        .get("providers")?
-        .get(provider_id)?;
-    let site_key = provider
-        .get("site_key")
-        .and_then(|value| value.as_str())
-        .filter(|value| !value.is_empty())?;
-    let secret = provider
-        .get("secret")
-        .and_then(|value| value.as_str())
-        .filter(|value| !value.is_empty())?;
-    Some(ProviderCredentials {
-        site_key: site_key.to_string(),
-        secret: secret.to_string(),
-        source: CredentialsSource::Dashboard,
-    })
+fn env_field(config: &Config, provider_id: &str, field: &str) -> Option<String> {
+    let value = match (provider_id, field) {
+        (PROVIDER_CLOUDFLARE_TURNSTILE, "site_key") => config.turnstile_site_key.clone(),
+        (PROVIDER_CLOUDFLARE_TURNSTILE, "secret") => config.turnstile_secret.clone(),
+        (PROVIDER_HCAPTCHA, "site_key") => config.hcaptcha_site_key.clone(),
+        (PROVIDER_HCAPTCHA, "secret") => config.hcaptcha_secret.clone(),
+        (PROVIDER_GOOGLE_RECAPTCHA_V2, "site_key") => config.recaptcha_site_key.clone(),
+        (PROVIDER_GOOGLE_RECAPTCHA_V2, "secret") => config.recaptcha_secret.clone(),
+        _ => return None,
+    }?;
+    if value.trim().is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn resolve_site_key(config: &Config, stored: Option<&Value>, provider_id: &str) -> Option<String> {
+    stored_field(stored, provider_id, "site_key").or_else(|| env_field(config, provider_id, "site_key"))
+}
+
+fn resolve_secret(config: &Config, stored: Option<&Value>, provider_id: &str) -> Option<String> {
+    stored_field(stored, provider_id, "secret").or_else(|| env_field(config, provider_id, "secret"))
 }
 
 fn resolve_credentials(config: &Config, stored: Option<&Value>, provider_id: &str) -> Option<ProviderCredentials> {
-    stored_provider_credentials(stored, provider_id).or_else(|| env_credentials(config, provider_id))
+    let site_key = resolve_site_key(config, stored, provider_id)?;
+    let secret = resolve_secret(config, stored, provider_id)?;
+    let source = if stored_field(stored, provider_id, "site_key").is_some()
+        || stored_field(stored, provider_id, "secret").is_some()
+    {
+        CredentialsSource::Dashboard
+    } else {
+        CredentialsSource::Environment
+    };
+    Some(ProviderCredentials {
+        site_key,
+        secret,
+        source,
+    })
 }
 
 fn resolve_providers(config: &Config, stored: Option<&Value>) -> Vec<ResolvedProvider> {
@@ -184,18 +189,43 @@ fn configured_provider_ids(config: &Config, stored: Option<&Value>) -> Vec<Strin
 }
 
 fn provider_infos(config: &Config, stored: Option<&Value>) -> Vec<CaptchaProviderInfo> {
-    resolve_providers(config, stored)
-        .into_iter()
-        .map(|provider| {
-            let credentials = provider.credentials.as_ref();
+    PROVIDER_CATALOG
+        .iter()
+        .map(|(id, label)| {
+            let site_key = resolve_site_key(config, stored, id);
+            let secret_set = resolve_secret(config, stored, id).is_some();
+            let configured = site_key.is_some() && secret_set;
+            let source = if stored_field(stored, id, "site_key").is_some()
+                || stored_field(stored, id, "secret").is_some()
+            {
+                Some(CredentialsSource::Dashboard)
+            } else if configured {
+                Some(CredentialsSource::Environment)
+            } else if secret_set || site_key.is_some() {
+                Some(CredentialsSource::Environment)
+            } else {
+                None
+            };
             CaptchaProviderInfo {
-                id: provider.id,
-                label: provider.label,
-                site_key: credentials.map(|value| value.site_key.clone()).filter(|value| !value.is_empty()),
-                configured: credentials.is_some(),
-                secret_set: credentials.is_some(),
-                source: credentials.map(|value| value.source.clone()),
+                id: (*id).to_string(),
+                label: (*label).to_string(),
+                site_key,
+                configured,
+                secret_set,
+                source,
             }
+        })
+        .chain(if config.turnstile_dev_bypass {
+            Some(CaptchaProviderInfo {
+                id: PROVIDER_DEV_BYPASS.into(),
+                label: "Development bypass".into(),
+                site_key: None,
+                configured: true,
+                secret_set: true,
+                source: Some(CredentialsSource::Environment),
+            })
+        } else {
+            None
         })
         .collect()
 }
@@ -470,6 +500,32 @@ mod tests {
             admin_session_cookie_name: "gho_admin_session".into(),
             admin_session_secret: None,
         }
+    }
+
+    #[test]
+    fn merges_env_secret_with_dashboard_site_key() {
+        let mut config = test_config();
+        config.turnstile_secret = Some("env-secret".into());
+        let merged = merge_settings_update(
+            None,
+            &CaptchaSettingsUpdate {
+                enabled_providers: vec![PROVIDER_CLOUDFLARE_TURNSTILE.into()],
+                default_provider: Some(PROVIDER_CLOUDFLARE_TURNSTILE.into()),
+                providers: HashMap::from([(
+                    PROVIDER_CLOUDFLARE_TURNSTILE.into(),
+                    CaptchaProviderCredentialsUpdate {
+                        site_key: Some("site-from-dashboard".into()),
+                        secret: None,
+                    },
+                )]),
+            },
+            &config,
+        )
+        .unwrap();
+        let credentials =
+            resolve_credentials(&config, Some(&merged), PROVIDER_CLOUDFLARE_TURNSTILE).unwrap();
+        assert_eq!(credentials.site_key, "site-from-dashboard");
+        assert_eq!(credentials.secret, "env-secret");
     }
 
     #[test]

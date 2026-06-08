@@ -122,7 +122,9 @@ export function CaptchaSettingsEditor() {
         return;
       }
       if (!draft?.secret.trim() && !existing?.secret_set) {
-        setError(`Enter a secret key for ${labelFor(providerId, settings.available_providers)}.`);
+        setError(
+          `Enter a secret key for ${labelFor(providerId, settings.available_providers)}, or set it in the deployment environment.`,
+        );
         setSaving(false);
         return;
       }
@@ -196,10 +198,13 @@ export function CaptchaSettingsEditor() {
                     <p className="mt-1 text-sm text-slate-400">
                       {provider.configured
                         ? provider.source === "environment"
-                          ? "Configured from deployment environment variables."
-                          : "Configured from dashboard settings."
-                        : "Not configured yet."}
-                      {provider.secret_set ? " Secret is stored." : ""}
+                          ? "Fully configured from deployment environment variables."
+                          : "Fully configured from dashboard settings."
+                        : provider.secret_set && !provider.site_key
+                          ? "Secret is already set from the deployment environment. Add the public site key below to finish setup."
+                          : provider.site_key && !provider.secret_set
+                            ? "Site key is set. Add the secret key below to finish setup."
+                            : "Not configured yet. Enter both the public site key and private secret key."}
                     </p>
                   </div>
                   <label className="flex cursor-pointer items-center gap-3 text-sm font-semibold text-slate-200">

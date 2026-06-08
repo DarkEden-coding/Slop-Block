@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { apiFetch, CAPTCHA_PROVIDER_OPTIONS, defaultPolicy, type CaptchaSettings, type RepoPolicy, type RepoPolicyResponse } from "../lib/api";
 
@@ -26,11 +27,18 @@ export function RepoPolicyEditor({ repoId }: { repoId: string }) {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [captchaSettings, setCaptchaSettings] = useState<CaptchaSettings | null>(null);
+  const [captchaSettingsError, setCaptchaSettingsError] = useState<string | null>(null);
 
   useEffect(() => {
     apiFetch<CaptchaSettings>("/api/settings/captcha")
-      .then(setCaptchaSettings)
-      .catch(() => setCaptchaSettings(null));
+      .then((loaded) => {
+        setCaptchaSettings(loaded);
+        setCaptchaSettingsError(null);
+      })
+      .catch((err: Error) => {
+        setCaptchaSettings(null);
+        setCaptchaSettingsError(err.message);
+      });
   }, []);
 
   useEffect(() => {
@@ -82,7 +90,13 @@ export function RepoPolicyEditor({ repoId }: { repoId: string }) {
       <div className="mt-5 grid gap-4 md:grid-cols-2">
         <label className="block rounded-2xl border border-white/10 bg-slate-950/40 p-4">
           <span className="font-semibold text-white">CAPTCHA provider</span>
-          <p className="mt-1 text-sm text-slate-400">Override the installation default for this repository.</p>
+          <p className="mt-1 text-sm text-slate-400">
+            Optional per-repository override. Set up providers first in{" "}
+            <Link href="/dashboard/settings" className="font-semibold text-cyan-300 hover:text-cyan-100">
+              CAPTCHA settings
+            </Link>
+            .
+          </p>
           <select
             className="mt-3 h-11 w-full rounded-xl border border-white/10 bg-slate-950 px-3 text-sm text-white outline-none ring-cyan-300/40 transition focus:ring-4"
             value={policy.captcha_provider ?? ""}
@@ -105,6 +119,18 @@ export function RepoPolicyEditor({ repoId }: { repoId: string }) {
               );
             })}
           </select>
+          {captchaSettingsError && (
+            <p className="mt-2 text-sm text-amber-300">Could not load installation CAPTCHA settings: {captchaSettingsError}</p>
+          )}
+          {!captchaSettingsError && captchaSettings && captchaSettings.enabled_providers.length === 0 && (
+            <p className="mt-2 text-sm text-amber-300">
+              No providers are enabled yet. Open{" "}
+              <Link href="/dashboard/settings" className="font-semibold text-cyan-200 hover:text-white">
+                CAPTCHA settings
+              </Link>{" "}
+              to add your Turnstile site key and enable a provider.
+            </p>
+          )}
         </label>
         <label className="block rounded-2xl border border-white/10 bg-slate-950/40 p-4">
           <span className="font-semibold text-white">Check mode</span>
