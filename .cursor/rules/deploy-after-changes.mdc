@@ -1,0 +1,19 @@
+---
+description: Push to GitHub and redeploy the remote machine after each completed change set
+alwaysApply: true
+---
+
+# Push and deploy after changes
+
+When you finish a coherent set of code changes in this repo:
+
+1. Run tests or typechecks relevant to the edited areas when practical.
+2. Commit with a concise message focused on why the change was made.
+3. Push to `origin/main`.
+4. Deploy by running `./scripts/update-remote-deployment.local.sh` from the repo root.
+
+Do not skip push/deploy unless the user explicitly says not to for that turn, or there are no committed code changes to ship.
+
+Do not commit build artifacts (for example `*.tsbuildinfo`).
+
+If deploy fails, report the failure and fix blockers before ending the turn when possible.
