@@ -11,7 +11,6 @@ const RECAPTCHA_SCRIPT = "https://www.google.com/recaptcha/api.js?render=explici
 declare global {
   interface Window {
     turnstile?: {
-      ready: (callback: () => void) => void;
       render: (
         el: HTMLElement | string,
         opts: {
@@ -61,41 +60,42 @@ function useStableHandler<T extends (...args: never[]) => void>(handler: T) {
   return handlerRef;
 }
 
+function turnstileApiReady() {
+  return typeof window !== "undefined" && typeof window.turnstile?.render === "function";
+}
+
 function TurnstileWidget({ siteKey, onToken, onError }: Omit<ProviderWidgetProps, "providerId">) {
   const containerRef = useRef<HTMLDivElement>(null);
   const widgetIdRef = useRef<string | null>(null);
   const onTokenRef = useStableHandler(onToken);
   const onErrorRef = useStableHandler(onError ?? (() => undefined));
-  const [scriptReady, setScriptReady] = useState(
-    () => typeof window !== "undefined" && typeof window.turnstile !== "undefined",
-  );
+  const [scriptReady, setScriptReady] = useState(() => turnstileApiReady());
 
   useEffect(() => {
-    if (!scriptReady || !containerRef.current) return;
+    if (turnstileApiReady()) {
+      setScriptReady(true);
+    }
+  }, []);
 
-    let cancelled = false;
+  useEffect(() => {
+    if (!scriptReady || !containerRef.current || !window.turnstile?.render) return;
 
-    const mount = () => {
-      if (cancelled || !containerRef.current || !window.turnstile) return;
-      if (widgetIdRef.current) {
-        window.turnstile.remove(widgetIdRef.current);
-        widgetIdRef.current = null;
-      }
-      widgetIdRef.current = window.turnstile.render(containerRef.current, {
-        sitekey: siteKey,
-        theme: "light",
-        callback: (token) => onTokenRef.current(token),
-        "error-callback": () =>
-          onErrorRef.current?.("Turnstile could not run. Disable ad blockers for this page and try again."),
-        "expired-callback": () =>
-          onErrorRef.current?.("Turnstile expired. Complete the challenge again."),
-      });
-    };
+    if (widgetIdRef.current) {
+      window.turnstile.remove(widgetIdRef.current);
+      widgetIdRef.current = null;
+    }
 
-    window.turnstile?.ready(mount);
+    widgetIdRef.current = window.turnstile.render(containerRef.current, {
+      sitekey: siteKey,
+      theme: "light",
+      callback: (token) => onTokenRef.current(token),
+      "error-callback": () =>
+        onErrorRef.current?.("Turnstile could not run. Disable ad blockers for this page and try again."),
+      "expired-callback": () =>
+        onErrorRef.current?.("Turnstile expired. Complete the challenge again."),
+    });
 
     return () => {
-      cancelled = true;
       if (widgetIdRef.current && window.turnstile) {
         window.turnstile.remove(widgetIdRef.current);
         widgetIdRef.current = null;
@@ -106,9 +106,15 @@ function TurnstileWidget({ siteKey, onToken, onError }: Omit<ProviderWidgetProps
   return (
     <>
       <Script
+        id="cloudflare-turnstile"
         src={TURNSTILE_SCRIPT}
         strategy="afterInteractive"
-        onLoad={() => setScriptReady(true)}
+        onLoad={() => {
+          if (turnstileApiReady()) setScriptReady(true);
+        }}
+        onReady={() => {
+          if (turnstileApiReady()) setScriptReady(true);
+        }}
         onError={() => onErrorRef.current?.("Failed to load Cloudflare Turnstile.")}
       />
       <div ref={containerRef} className="min-h-[65px]" />
