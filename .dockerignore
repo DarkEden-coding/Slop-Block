@@ -1,0 +1,26 @@
+# Git
+.git
+.gitignore
+
+# Dependencies / build outputs
+node_modules
+apps/web/node_modules
+.pnpm-store
+target
+apps/web/.next
+.next
+coverage
+
+# Local env / logs
+.env
+.env.*
+!.env.example
+*.log
+
+# Docker artifacts
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Misc
+.DS_Store

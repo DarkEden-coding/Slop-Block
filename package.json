@@ -1,0 +1,13 @@
+{
+  "name": "github-human-auth",
+  "private": true,
+  "packageManager": "pnpm@9.12.0",
+  "scripts": {
+    "dev": "pnpm --filter web dev",
+    "build": "pnpm --filter web build",
+    "lint": "pnpm --filter web lint",
+    "docker:config": "docker compose config",
+    "docker:up": "docker compose up --build"
+  },
+  "devDependencies": {}
+}

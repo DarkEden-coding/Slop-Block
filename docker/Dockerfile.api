@@ -1,0 +1,45 @@
+# syntax=docker/dockerfile:1.7
+
+FROM rust:1.88-bookworm AS chef
+WORKDIR /app
+RUN cargo install cargo-chef --locked
+
+FROM chef AS planner
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY apps/api/Cargo.toml apps/api/Cargo.toml
+COPY crates/captcha/Cargo.toml crates/captcha/Cargo.toml
+COPY crates/db/Cargo.toml crates/db/Cargo.toml
+COPY crates/github/Cargo.toml crates/github/Cargo.toml
+COPY crates/jobs/Cargo.toml crates/jobs/Cargo.toml
+COPY crates/policy/Cargo.toml crates/policy/Cargo.toml
+COPY crates/shared/Cargo.toml crates/shared/Cargo.toml
+COPY apps apps
+COPY crates crates
+COPY migrations migrations
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --package api --recipe-path recipe.json
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY apps apps
+COPY crates crates
+# sqlx::migrate! embeds these migrations at compile time; keep before cargo build.
+COPY migrations migrations
+RUN cargo build --release --package api --bin api
+
+FROM debian:bookworm-slim AS runtime
+WORKDIR /app
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --create-home --home-dir /home/api api
+COPY --from=builder /app/target/release/api /usr/local/bin/api
+USER api
+ENV API_HOST=0.0.0.0 \
+    API_PORT=8080 \
+    RUST_LOG=info
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:${API_PORT}/healthz >/dev/null || exit 1
+CMD ["api"]
