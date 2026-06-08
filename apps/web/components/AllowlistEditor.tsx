@@ -24,7 +24,8 @@ export function AllowlistEditor({ repoId, initialUsers }: { repoId: string; init
     finally { setBusy(false); }
   }
 
-  async function removeUser(subjectId: string) {
+  async function removeUser(subjectId: string, label: string) {
+    if (!window.confirm(`Remove ${label} from this repository's auth allowlist?`)) return;
     setBusy(true); setError(null);
     try {
       await apiFetch<void>(`/api/repos/${encodeURIComponent(repoId)}/allowlist/${encodeURIComponent(subjectId)}`, { method: "DELETE" });
@@ -34,8 +35,8 @@ export function AllowlistEditor({ repoId, initialUsers }: { repoId: string; init
   }
 
   return <section className="mt-6 rounded-2xl border bg-white p-6 shadow-sm">
-    <h2 className="text-xl font-bold text-slate-950">Manual allowlist</h2>
-    <p className="mt-1 text-sm text-slate-600">Add trusted contributors by GitHub login or numeric user id.</p>
+    <h2 className="text-xl font-bold text-slate-950">Auth allowlist</h2>
+    <p className="mt-1 text-sm text-slate-600">Add or remove trusted contributors by GitHub login or numeric user id.</p>
     <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_1fr_auto]">
       <input className="rounded-md border px-3 py-2" placeholder="login or user id" value={user} onChange={(e) => setUser(e.target.value)} />
       <input className="rounded-md border px-3 py-2" placeholder="reason (optional)" value={reason} onChange={(e) => setReason(e.target.value)} />
@@ -43,11 +44,14 @@ export function AllowlistEditor({ repoId, initialUsers }: { repoId: string; init
     </div>
     {error && <p className="mt-3 text-sm text-red-700">{error}</p>}
     <ul className="mt-5 divide-y rounded-lg border">
-      {users.length === 0 && <li className="p-4 text-sm text-slate-500">No manually allowlisted users.</li>}
-      {users.map((u) => <li key={u.subject_id} className="flex items-center justify-between gap-3 p-4">
-        <div><p className="font-medium text-slate-900">{u.login ?? u.subject_id}</p>{u.reason && <p className="text-sm text-slate-500">{u.reason}</p>}</div>
-        <button className="text-sm font-semibold text-red-700 disabled:opacity-60" disabled={busy} onClick={() => removeUser(u.subject_id)}>Remove</button>
-      </li>)}
+      {users.length === 0 && <li className="p-4 text-sm text-slate-500">No authorized users.</li>}
+      {users.map((u) => {
+        const label = u.login ?? u.subject_id;
+        return <li key={u.subject_id} className="flex items-center justify-between gap-3 p-4">
+          <div><p className="font-medium text-slate-900">{label}</p>{u.reason && <p className="text-sm text-slate-500">{u.reason}</p>}</div>
+          <button className="text-sm font-semibold text-red-700 disabled:opacity-60" disabled={busy} onClick={() => removeUser(u.subject_id, label)}>Remove</button>
+        </li>;
+      })}
     </ul>
   </section>;
 }
