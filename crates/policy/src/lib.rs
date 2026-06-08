@@ -21,7 +21,7 @@ impl Default for VerificationPolicy {
         Self {
             verify_issues: true,
             verify_pull_requests: true,
-            exempt_collaborators: true,
+            exempt_collaborators: false,
             exempt_verified_bots: true,
             reverify_after_days: Some(90),
             check_mode: CheckMode::Enforce,
@@ -269,7 +269,13 @@ mod tests {
     fn exempts_collaborator() {
         let mut i = input();
         i.subject.is_collaborator = true;
-        let d = decide(&VerificationPolicy::default(), &i);
+        let d = decide(
+            &VerificationPolicy {
+                exempt_collaborators: true,
+                ..Default::default()
+            },
+            &i,
+        );
         assert!(d.allowed);
         assert_eq!(d.reason, DecisionReason::CollaboratorExempt);
     }

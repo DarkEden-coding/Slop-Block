@@ -28,10 +28,17 @@ export type TrustedUser = {
 
 export type RepoPolicy = {
   enabled: boolean;
-  require_captcha: boolean;
-  require_oauth: boolean;
-  trusted_contributors_bypass: boolean;
-  comment_mode: "always" | "once" | "never";
+  verify_issues: boolean;
+  verify_pull_requests: boolean;
+  exempt_collaborators: boolean;
+  exempt_verified_bots: boolean;
+  reverify_after_days: number | null;
+  check_mode: "off" | "audit" | "enforce";
+  apply_label: string | null;
+  verified_label: string | null;
+  pending_label: string | null;
+  comment_on_required: boolean;
+  close_unverified: boolean;
 };
 
 export type RepoPolicyResponse = {
@@ -93,8 +100,15 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
 
 export const defaultPolicy: RepoPolicy = {
   enabled: true,
-  require_captcha: true,
-  require_oauth: true,
-  trusted_contributors_bypass: true,
-  comment_mode: "once",
+  verify_issues: true,
+  verify_pull_requests: true,
+  exempt_collaborators: false,
+  exempt_verified_bots: true,
+  reverify_after_days: 90,
+  check_mode: "enforce",
+  apply_label: "human-auth-required",
+  verified_label: "human-auth-verified",
+  pending_label: "human-auth-pending",
+  comment_on_required: true,
+  close_unverified: false,
 };

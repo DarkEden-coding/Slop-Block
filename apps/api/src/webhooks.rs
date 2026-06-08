@@ -127,6 +127,11 @@ async fn process_event(
             }
         }
         "issues" => {
+            upsert_installation_from_payload(pool, payload).await?;
+            if let Some(repo) = payload.get("repository") {
+                let installation_id = payload.pointer("/installation/id").and_then(Value::as_i64);
+                upsert_repository_from_value(pool, repo, installation_id).await?;
+            }
             let event: IssueLikeEvent =
                 serde_json::from_value(payload.clone()).map_err(|_| WebhookError::InvalidJson)?;
             if matches!(event.action.as_str(), "opened" | "reopened") {
@@ -134,6 +139,11 @@ async fn process_event(
             }
         }
         "pull_request" => {
+            upsert_installation_from_payload(pool, payload).await?;
+            if let Some(repo) = payload.get("repository") {
+                let installation_id = payload.pointer("/installation/id").and_then(Value::as_i64);
+                upsert_repository_from_value(pool, repo, installation_id).await?;
+            }
             let event: PrLikeEvent =
                 serde_json::from_value(payload.clone()).map_err(|_| WebhookError::InvalidJson)?;
             if matches!(event.action.as_str(), "opened" | "reopened" | "synchronize") {
@@ -238,15 +248,14 @@ async fn process_subject_event(
         Some(r) => r,
         None => return Ok(()),
     };
-    let stored_policy = match db::get_policy(pool, repo.repository_id)
+    let policy: policy::VerificationPolicy = match db::get_policy(pool, repo.repository_id)
         .await
         .map_err(WebhookError::Db)?
     {
-        Some(p) if p.enabled => p,
-        _ => return Ok(()),
+        Some(p) if p.enabled => serde_json::from_value(p.policy).unwrap_or_default(),
+        Some(_) => return Ok(()),
+        None => policy::VerificationPolicy::default(),
     };
-    let policy: policy::VerificationPolicy =
-        serde_json::from_value(stored_policy.policy).unwrap_or_default();
 
     let app_id = state
         .config
