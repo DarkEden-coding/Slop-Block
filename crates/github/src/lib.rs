@@ -369,7 +369,7 @@ impl GitHubApi for ReqwestGitHubClient {
         }
         self.send_json(
             self.client
-                .post(self.url("/login/oauth/access_token"))
+                .post(oauth_token_url(&self.api_base))
                 .header("Accept", "application/json")
                 .header("User-Agent", "GHO-github-human-auth")
                 .json(&Req {
@@ -518,6 +518,17 @@ impl GitHubApi for ReqwestGitHubClient {
             token,
         ))
         .await
+    }
+}
+
+fn oauth_token_url(api_base: &str) -> String {
+    if api_base.trim_end_matches('/') == "https://api.github.com" {
+        "https://github.com/login/oauth/access_token".into()
+    } else {
+        format!(
+            "{}/login/oauth/access_token",
+            api_base.trim_end_matches('/')
+        )
     }
 }
 

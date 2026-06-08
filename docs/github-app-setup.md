@@ -61,7 +61,7 @@ The OAuth callback registered in GitHub must exactly match the deployed API call
 https://<api-host>/api/github/oauth/callback
 ```
 
-The web app initiates verification flows and the API completes the callback. If the callback URL, cookie domain, or `COOKIE_SECURE` setting does not match the public deployment, users will be unable to finish verification.
+The web app initiates both contributor verification and dashboard administrator login flows, and the API completes the callback. Dashboard login starts at `/api/auth/github/start` but still redirects back through `/api/github/oauth/callback`, so only this one GitHub App callback URL is required. If the callback URL, cookie domain, or `COOKIE_SECURE` setting does not match the public deployment, users will be unable to finish verification or dashboard login.
 
 ## 6. Validate
 

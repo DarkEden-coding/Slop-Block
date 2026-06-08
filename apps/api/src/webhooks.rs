@@ -625,6 +625,9 @@ mod tests {
             turnstile_secret: None,
             turnstile_dev_bypass: false,
             admin_api_token: None,
+            admin_github_logins: vec![],
+            admin_session_cookie_name: "gho_admin_session".into(),
+            admin_session_secret: None,
         })
     }
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { apiFetch, defaultPolicy, type RepoPolicy } from "../lib/api";
+import { apiFetch, defaultPolicy, type RepoPolicy, type RepoPolicyResponse } from "../lib/api";
 
 export function RepoPolicyEditor({ repoId }: { repoId: string }) {
   const [policy, setPolicy] = useState<RepoPolicy>(defaultPolicy);
@@ -11,8 +11,8 @@ export function RepoPolicyEditor({ repoId }: { repoId: string }) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    apiFetch<RepoPolicy>(`/api/repos/${encodeURIComponent(repoId)}/policy`)
-      .then(setPolicy)
+    apiFetch<RepoPolicyResponse>(`/api/repos/${encodeURIComponent(repoId)}/policy`)
+      .then((res) => setPolicy({ ...defaultPolicy, ...(res.policy as Partial<RepoPolicy>), enabled: res.enabled }))
       .catch(() => setPolicy(defaultPolicy))
       .finally(() => setLoading(false));
   }, [repoId]);
@@ -20,8 +20,9 @@ export function RepoPolicyEditor({ repoId }: { repoId: string }) {
   async function save() {
     setSaving(true); setError(null); setMessage(null);
     try {
-      const saved = await apiFetch<RepoPolicy>(`/api/repos/${encodeURIComponent(repoId)}/policy`, { method: "POST", body: JSON.stringify(policy) });
-      setPolicy(saved ?? policy); setMessage("Policy saved.");
+      const { enabled, ...policyBody } = policy;
+      const saved = await apiFetch<RepoPolicyResponse>(`/api/repos/${encodeURIComponent(repoId)}/policy`, { method: "POST", body: JSON.stringify({ enabled, policy: policyBody }) });
+      setPolicy({ ...defaultPolicy, ...(saved.policy as Partial<RepoPolicy>), enabled: saved.enabled }); setMessage("Policy saved.");
     } catch (err) { setError(err instanceof Error ? err.message : "Save failed"); }
     finally { setSaving(false); }
   }

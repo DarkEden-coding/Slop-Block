@@ -142,6 +142,11 @@ async fn oauth_callback(
     }
     let code = q.code.ok_or(OAuthError::BadRequest)?;
     let st = q.state.ok_or(OAuthError::BadRequest)?;
+    if let Some(response) =
+        crate::admin_auth::handle_shared_oauth_callback(&state, &headers, &code, &st).await
+    {
+        return Ok(response);
+    }
     let raw_cookie = find_cookie(&headers, OAUTH_COOKIE).ok_or(OAuthError::InvalidState)?;
     let sc = parse_state_cookie(&raw_cookie, &st).ok_or(OAuthError::InvalidState)?;
     let pool = state.db.as_ref().ok_or(OAuthError::NotConfigured)?;

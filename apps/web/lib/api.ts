@@ -1,5 +1,4 @@
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
-const ADMIN_API_TOKEN = process.env.NEXT_PUBLIC_ADMIN_API_TOKEN;
 
 export type Installation = {
   id: number | string;
@@ -41,6 +40,17 @@ export type RepoPolicyResponse = {
   trusted_users?: TrustedUser[];
 };
 
+export type AuthMe = {
+  authenticated: boolean;
+  user: {
+    id: number;
+    login: string;
+    avatar_url?: string | null;
+    html_url?: string | null;
+  } | null;
+  login_url: string;
+};
+
 export type VerifySession = {
   session_id: string;
   status: "pending" | "verified" | "failed" | "expired" | string;
@@ -61,9 +71,9 @@ function url(path: string) {
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url(path), {
     ...init,
+    credentials: "include",
     headers: {
       "content-type": "application/json",
-      ...(ADMIN_API_TOKEN ? { authorization: `Bearer ${ADMIN_API_TOKEN}` } : {}),
       ...(init?.headers ?? {}),
     },
   });

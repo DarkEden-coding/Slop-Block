@@ -1,3 +1,4 @@
+pub mod admin_auth;
 pub mod job_runner;
 pub mod oauth;
 pub mod policy_routes;
@@ -36,6 +37,9 @@ pub struct Config {
     pub turnstile_secret: Option<String>,
     pub turnstile_dev_bypass: bool,
     pub admin_api_token: Option<String>,
+    pub admin_github_logins: Vec<String>,
+    pub admin_session_cookie_name: String,
+    pub admin_session_secret: Option<String>,
 }
 
 impl Config {
@@ -124,6 +128,27 @@ impl Config {
                 "ADMIN_API_TOKEN must be at least 32 characters when set",
             ));
         }
+        let admin_github_logins = get("ADMIN_GITHUB_LOGINS")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|login| !login.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        let admin_session_cookie_name =
+            get("ADMIN_SESSION_COOKIE_NAME").unwrap_or_else(|| "gho_admin_session".into());
+        if admin_session_cookie_name.trim().is_empty() || admin_session_cookie_name.contains(';') {
+            return Err(ConfigError::Invalid("ADMIN_SESSION_COOKIE_NAME is invalid"));
+        }
+        let admin_session_secret = get("ADMIN_SESSION_SECRET").filter(|value| !value.is_empty());
+        if admin_session_secret
+            .as_ref()
+            .is_some_and(|value| value.len() < 32)
+        {
+            return Err(ConfigError::Invalid(
+                "ADMIN_SESSION_SECRET must be at least 32 characters when set",
+            ));
+        }
 
         Ok(Self {
             host,
@@ -144,6 +169,9 @@ impl Config {
             turnstile_secret,
             turnstile_dev_bypass,
             admin_api_token,
+            admin_github_logins,
+            admin_session_cookie_name,
+            admin_session_secret,
         })
     }
 
@@ -198,6 +226,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
+        .merge(admin_auth::routes())
         .merge(policy_routes::router())
         .merge(webhooks::routes())
         .merge(oauth::routes())

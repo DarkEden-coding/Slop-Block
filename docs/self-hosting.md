@@ -38,6 +38,7 @@ The API runs migrations on startup. Readiness fails until PostgreSQL is reachabl
 - Put a reverse proxy or load balancer with HTTPS in front of `web` and `api`.
 - Set `WEB_BASE_URL`, `API_BASE_URL`, and `NEXT_PUBLIC_API_BASE_URL` to public HTTPS URLs.
 - Set `COOKIE_SECURE=true` and a strict `CORS_ALLOWED_ORIGINS`.
+- Set `ADMIN_GITHUB_LOGINS` to the GitHub logins allowed to configure this installation.
 - Keep PostgreSQL on a private network.
 - Use strong database credentials and platform secret injection.
 - Configure the GitHub App webhook URL as `https://<api-host>/api/github/webhook`.

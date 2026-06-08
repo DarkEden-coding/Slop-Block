@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
     Json, Router,
@@ -231,28 +231,11 @@ async fn remove_allowlist_subject(
 }
 
 fn ensure_admin(state: &AppState, headers: &HeaderMap) -> Result<(), PolicyRouteError> {
-    let Some(expected) = state.config.admin_api_token.as_deref() else {
-        return Ok(());
-    };
-    let Some(provided) = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-    else {
-        return Err(PolicyRouteError::Unauthorized);
-    };
-    if constant_time_eq(provided.as_bytes(), expected.as_bytes()) {
+    if crate::admin_auth::authorize_admin(state, headers) {
         Ok(())
     } else {
         Err(PolicyRouteError::Unauthorized)
     }
-}
-
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 async fn find_repo(
