@@ -5,7 +5,6 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use serde_json::json;
 use thiserror::Error;
 
 use crate::captcha_config::{
@@ -41,13 +40,13 @@ async fn update_settings(
 ) -> Result<Json<CaptchaSettings>, CaptchaRouteError> {
     ensure_admin(&state, &headers)?;
     let pool = state.db.as_ref().ok_or(CaptchaRouteError::NoDb)?;
-    let (enabled_providers, default_provider) =
-        captcha_config::validate_settings_update(&body, &state.config)
-            .map_err(CaptchaRouteError::InvalidSettings)?;
-    let value = json!({
-        "enabled_providers": enabled_providers,
-        "default_provider": default_provider,
-    });
+    let existing = db::get_app_setting(pool, SETTINGS_KEY)
+        .await
+        .map_err(CaptchaRouteError::Db)?;
+    captcha_config::validate_settings_update(&body, &state.config, existing.as_ref())
+        .map_err(CaptchaRouteError::InvalidSettings)?;
+    let value = captcha_config::merge_settings_update(existing, &body, &state.config)
+        .map_err(CaptchaRouteError::InvalidSettings)?;
     db::upsert_app_setting(pool, SETTINGS_KEY, value)
         .await
         .map_err(CaptchaRouteError::Db)?;

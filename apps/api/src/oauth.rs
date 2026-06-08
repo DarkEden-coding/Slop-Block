@@ -272,7 +272,9 @@ async fn post_captcha(
             .verify(&body.token, None)
             .await?
     } else {
-        captcha_config::verify_token(&state.config, &provider_id, &body.token).await?
+        let stored = db::get_app_setting(pool, captcha_config::SETTINGS_KEY).await?;
+        captcha_config::verify_token(&state.config, stored.as_ref(), &provider_id, &body.token)
+            .await?
     };
     if !cap.success {
         return Err(OAuthError::CaptchaFailed);

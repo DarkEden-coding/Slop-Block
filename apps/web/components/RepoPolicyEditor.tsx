@@ -88,8 +88,13 @@ export function RepoPolicyEditor({ repoId }: { repoId: string }) {
             value={policy.captcha_provider ?? ""}
             onChange={(e) => setPolicy((p) => ({ ...p, captcha_provider: e.target.value ? e.target.value : null }))}
           >
-            <option value="">Use installation default{captchaSettings?.default_provider ? ` (${captchaSettings.default_provider})` : ""}</option>
-            {(captchaSettings?.enabled_providers ?? CAPTCHA_PROVIDER_OPTIONS.map((option) => option.id)).map((providerId) => {
+            <option value="">
+              Use installation default
+              {captchaSettings?.default_provider
+                ? ` (${captchaSettings.available_providers.find((provider) => provider.id === captchaSettings.default_provider)?.label ?? captchaSettings.default_provider})`
+                : ""}
+            </option>
+            {(captchaSettings?.enabled_providers ?? []).map((providerId) => {
               const label = captchaSettings?.available_providers.find((provider) => provider.id === providerId)?.label
                 ?? CAPTCHA_PROVIDER_OPTIONS.find((option) => option.id === providerId)?.label
                 ?? providerId;

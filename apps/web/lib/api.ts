@@ -31,6 +31,19 @@ export type CaptchaProviderInfo = {
   label: string;
   site_key?: string | null;
   configured: boolean;
+  secret_set: boolean;
+  source?: "dashboard" | "environment" | null;
+};
+
+export type CaptchaProviderCredentialsUpdate = {
+  site_key?: string | null;
+  secret?: string | null;
+};
+
+export type CaptchaSettingsUpdate = {
+  enabled_providers: string[];
+  default_provider?: string | null;
+  providers?: Record<string, CaptchaProviderCredentialsUpdate>;
 };
 
 export type CaptchaSettings = {

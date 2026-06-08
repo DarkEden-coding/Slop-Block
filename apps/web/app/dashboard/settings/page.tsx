@@ -12,7 +12,7 @@ export default function CaptchaSettingsPage() {
         </Link>
         <h1 className="mt-5 text-4xl font-black tracking-tight text-white sm:text-5xl">CAPTCHA settings</h1>
         <p className="mb-8 mt-3 max-w-3xl text-slate-400">
-          Enable one or more CAPTCHA providers for contributor verification. Repositories can optionally override the installation default.
+          Set up Cloudflare Turnstile, hCaptcha, or Google reCAPTCHA with site and secret keys, then choose which providers are enabled for contributor verification.
         </p>
         <AuthGate>
           <CaptchaSettingsEditor />
