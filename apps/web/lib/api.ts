@@ -1,3 +1,5 @@
+import { showToast } from "./toast";
+
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 
 export type Installation = {
@@ -127,14 +129,20 @@ function url(path: string) {
 }
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url(path), {
-    ...init,
-    credentials: "include",
-    headers: {
-      "content-type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(url(path), {
+      ...init,
+      credentials: "include",
+      headers: {
+        "content-type": "application/json",
+        ...(init?.headers ?? {}),
+      },
+    });
+  } catch (err) {
+    showToast(`Could not reach the API (${path}).`, "error", "Network error");
+    throw err;
+  }
 
   if (!res.ok) {
     let message = `${res.status} ${res.statusText}`;
@@ -142,6 +150,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
       const body = (await res.json()) as { error?: string | { message?: string }; message?: string };
       message = typeof body.error === "string" ? body.error : body.error?.message ?? body.message ?? message;
     } catch {}
+    showToast(`${message} (${path})`, "error", "Request failed");
     throw new Error(message);
   }
 
