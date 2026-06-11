@@ -20,3 +20,15 @@ export function showToast(message: string, tone: Toast["tone"] = "info", title?:
   const toast: Toast = { id: nextId++, tone, title, message };
   listeners.forEach((listener) => listener(toast));
 }
+
+export function showSuccessToast(message: string, title = "Success") {
+  showToast(message, "success", title);
+}
+
+export function showErrorToast(message: string, title = "Error") {
+  showToast(message, "error", title);
+}
+
+export function showInfoToast(message: string, title?: string) {
+  showToast(message, "info", title);
+}

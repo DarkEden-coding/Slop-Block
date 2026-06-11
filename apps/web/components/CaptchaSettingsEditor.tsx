@@ -9,6 +9,7 @@ import {
   type CaptchaSettings,
   type CaptchaSettingsUpdate,
 } from "../lib/api";
+import { showErrorToast, showSuccessToast } from "../lib/toast";
 
 type ProviderDraft = {
   siteKey: string;
@@ -39,7 +40,6 @@ export function CaptchaSettingsEditor() {
   const [defaultProvider, setDefaultProvider] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -99,7 +99,6 @@ export function CaptchaSettingsEditor() {
     if (!settings) return;
     setSaving(true);
     setError(null);
-    setMessage(null);
 
     const providers: Record<string, CaptchaProviderCredentialsUpdate> = {};
     for (const [providerId, draft] of Object.entries(drafts)) {
@@ -117,14 +116,16 @@ export function CaptchaSettingsEditor() {
       const draft = drafts[providerId];
       const existing = settings.available_providers.find((provider) => provider.id === providerId);
       if (!draft?.siteKey.trim() && !existing?.site_key) {
-        setError(`Enter a site key for ${labelFor(providerId, settings.available_providers)}.`);
+        const validationMessage = `Enter a site key for ${labelFor(providerId, settings.available_providers)}.`;
+        setError(validationMessage);
+        showErrorToast(validationMessage, "Missing site key");
         setSaving(false);
         return;
       }
       if (!draft?.secret.trim() && !existing?.secret_set) {
-        setError(
-          `Enter a secret key for ${labelFor(providerId, settings.available_providers)}, or set it in the deployment environment.`,
-        );
+        const validationMessage = `Enter a secret key for ${labelFor(providerId, settings.available_providers)}, or set it in the deployment environment.`;
+        setError(validationMessage);
+        showErrorToast(validationMessage, "Missing secret key");
         setSaving(false);
         return;
       }
@@ -155,7 +156,7 @@ export function CaptchaSettingsEditor() {
         }
         return next;
       });
-      setMessage("CAPTCHA settings saved.");
+      showSuccessToast("CAPTCHA provider settings were saved.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Save failed");
     } finally {
@@ -271,7 +272,6 @@ export function CaptchaSettingsEditor() {
         </label>
 
         {error && <p className="mt-4 text-sm font-medium text-red-300">{error}</p>}
-        {message && <p className="mt-4 text-sm font-medium text-emerald-300">{message}</p>}
         <button
           onClick={save}
           disabled={saving || enabledProviderIds.length === 0}

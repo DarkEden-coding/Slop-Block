@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { apiFetch, type RepoPolicyResponse, type TrustedUser } from "../lib/api";
+import { confirmAction } from "../lib/confirm";
+import { showSuccessToast } from "../lib/toast";
 
 export function AllowlistEditor({ repoId }: { repoId: string }) {
   const [users, setUsers] = useState<TrustedUser[]>([]);
@@ -26,16 +28,25 @@ export function AllowlistEditor({ repoId }: { repoId: string }) {
       });
       setUsers((current) => [added, ...current.filter((u) => u.subject_id !== added.subject_id)]);
       setUser(""); setReason("");
+      showSuccessToast(`${added.login ?? added.subject_id} was added to the allowlist.`);
     } catch (err) { setError(err instanceof Error ? err.message : "Failed to add user"); }
     finally { setBusy(false); }
   }
 
   async function removeUser(subjectId: string, label: string) {
-    if (!window.confirm(`Remove ${label} from this repository's auth allowlist?`)) return;
+    const confirmed = await confirmAction({
+      title: "Remove from allowlist",
+      message: `Remove ${label} from this repository's auth allowlist? They will need to verify normally again.`,
+      confirmLabel: "Remove",
+      cancelLabel: "Keep",
+      tone: "danger",
+    });
+    if (!confirmed) return;
     setBusy(true); setError(null);
     try {
       await apiFetch<void>(`/api/repos/${encodeURIComponent(repoId)}/allowlist/${encodeURIComponent(subjectId)}`, { method: "DELETE" });
       setUsers((current) => current.filter((u) => u.subject_id !== subjectId));
+      showSuccessToast(`${label} was removed from the allowlist.`);
     } catch (err) { setError(err instanceof Error ? err.message : "Failed to remove user"); }
     finally { setBusy(false); }
   }

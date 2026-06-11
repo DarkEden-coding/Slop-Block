@@ -4,6 +4,7 @@ import Image from "next/image";
 import type React from "react";
 import { useEffect, useState } from "react";
 import { API_BASE_URL, apiFetch, type AuthMe } from "../lib/api";
+import { showSuccessToast } from "../lib/toast";
 
 function absoluteApi(path: string) {
   if (!API_BASE_URL) return path;
@@ -23,7 +24,10 @@ export function AuthPanel({ compact = false, hideLogin = false }: { compact?: bo
 
   async function logout() {
     await apiFetch<void>("/api/auth/logout", { method: "POST" });
-    window.location.href = "/";
+    showSuccessToast("You have been signed out.");
+    window.setTimeout(() => {
+      window.location.href = "/";
+    }, 450);
   }
 
   if (loading) {

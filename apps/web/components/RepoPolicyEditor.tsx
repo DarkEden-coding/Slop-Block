@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { apiFetch, CAPTCHA_PROVIDER_OPTIONS, defaultPolicy, type CaptchaSettings, type RepoPolicy, type RepoPolicyResponse } from "../lib/api";
+import { showSuccessToast } from "../lib/toast";
 
 const boolFields = [
   ["enabled", "Enable verification for this repository", "Master switch for this repository."],
@@ -24,7 +25,6 @@ export function RepoPolicyEditor({ repoId }: { repoId: string }) {
   const [policy, setPolicy] = useState<RepoPolicy>(defaultPolicy);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [captchaSettings, setCaptchaSettings] = useState<CaptchaSettings | null>(null);
   const [captchaSettingsError, setCaptchaSettingsError] = useState<string | null>(null);
@@ -49,11 +49,12 @@ export function RepoPolicyEditor({ repoId }: { repoId: string }) {
   }, [repoId]);
 
   async function save() {
-    setSaving(true); setError(null); setMessage(null);
+    setSaving(true); setError(null);
     try {
       const { enabled, ...policyBody } = policy;
       const saved = await apiFetch<RepoPolicyResponse>(`/api/repos/${encodeURIComponent(repoId)}/policy`, { method: "POST", body: JSON.stringify({ enabled, policy: policyBody }) });
-      setPolicy({ ...defaultPolicy, ...(saved.policy as Partial<RepoPolicy>), enabled: saved.enabled }); setMessage("Policy saved.");
+      setPolicy({ ...defaultPolicy, ...(saved.policy as Partial<RepoPolicy>), enabled: saved.enabled });
+      showSuccessToast("Repository verification policy was saved.");
     } catch (err) { setError(err instanceof Error ? err.message : "Save failed"); }
     finally { setSaving(false); }
   }
@@ -153,7 +154,7 @@ export function RepoPolicyEditor({ repoId }: { repoId: string }) {
         ))}
       </div>
 
-      {error && <p className="mt-4 text-sm font-medium text-red-300">{error}</p>}{message && <p className="mt-4 text-sm font-medium text-emerald-300">{message}</p>}
+      {error && <p className="mt-4 text-sm font-medium text-red-300">{error}</p>}
       <button onClick={save} disabled={saving} className="mt-6 inline-flex h-11 items-center justify-center rounded-xl bg-cyan-300 px-6 text-sm font-bold leading-none text-slate-950 shadow-xl shadow-cyan-950/30 transition hover:-translate-y-0.5 hover:bg-cyan-200 disabled:translate-y-0 disabled:opacity-60">{saving ? "Saving…" : "Save policy"}</button>
     </section>
   );

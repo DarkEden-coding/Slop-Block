@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Toaster } from "../components/Toaster";
 
 export const metadata: Metadata = {
@@ -13,6 +14,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
       <body className="antialiased">
         {children}
         <Toaster />
+        <ConfirmDialog />
       </body>
     </html>
   );
