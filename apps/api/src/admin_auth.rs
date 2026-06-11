@@ -43,6 +43,12 @@ struct MeResponse {
 }
 
 #[derive(Deserialize)]
+struct StartQuery {
+    #[serde(default)]
+    return_to: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct CallbackQuery {
     code: Option<String>,
     state: Option<String>,
@@ -61,17 +67,27 @@ async fn me(State(state): State<AppState>, headers: HeaderMap) -> Json<MeRespons
     })
 }
 
-async fn github_start(State(state): State<AppState>) -> Result<Response, AdminAuthError> {
+async fn github_start(
+    State(state): State<AppState>,
+    Query(q): Query<StartQuery>,
+) -> Result<Response, AdminAuthError> {
     let client_id = state
         .config
         .github_oauth_client_id
         .as_ref()
         .ok_or(AdminAuthError::NotConfigured)?;
     let st = random_state();
+    let return_to = q
+        .return_to
+        .as_deref()
+        .filter(|p| p.starts_with('/') && !p.starts_with("//"))
+        .map(|p| URL_SAFE_NO_PAD.encode(p))
+        .unwrap_or_default();
     let cookie = format!(
-        "{}={}; Path=/api; HttpOnly; SameSite=Lax; Max-Age=600{}",
+        "{}={}.{}; Path=/api; HttpOnly; SameSite=Lax; Max-Age=600{}",
         ADMIN_OAUTH_STATE_COOKIE,
         st,
+        return_to,
         secure_suffix(&state)
     );
     let redirect_uri = shared_oauth_callback_url(&state);
@@ -118,11 +134,19 @@ async fn process_admin_oauth_callback(
     st: &str,
     redirect_uri: &str,
 ) -> Result<Response, AdminAuthError> {
-    let cookie_state =
+    let cookie_value =
         find_cookie(headers, ADMIN_OAUTH_STATE_COOKIE).ok_or(AdminAuthError::InvalidState)?;
+    let (cookie_state, return_to_b64) = cookie_value
+        .split_once('.')
+        .unwrap_or((cookie_value.as_str(), ""));
     if cookie_state != st {
         return Err(AdminAuthError::InvalidState);
     }
+    let return_to = URL_SAFE_NO_PAD
+        .decode(return_to_b64)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .filter(|p| p.starts_with('/') && !p.starts_with("//"));
     let client_id = state
         .config
         .github_oauth_client_id
@@ -163,7 +187,15 @@ async fn process_admin_oauth_callback(
         ADMIN_OAUTH_STATE_COOKIE,
         secure_suffix(state)
     );
-    let mut res = redirect_home(state, "auth=ok");
+    let mut res = match return_to {
+        Some(path) => Redirect::temporary(&format!(
+            "{}{}",
+            state.config.web_base_url.trim_end_matches('/'),
+            path
+        ))
+        .into_response(),
+        None => redirect_home(state, "auth=ok"),
+    };
     res.headers_mut()
         .append(header::SET_COOKIE, cookie.parse().unwrap());
     res.headers_mut()

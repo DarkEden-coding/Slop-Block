@@ -1,11 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 import { VerifyShell } from "./VerifyShell";
 
 export function VerifySuccessClient({ sessionId }: { sessionId: string }) {
-  const [secondsLeft, setSecondsLeft] = useState(5);
   const { redirectUrl, login } = useMemo(() => {
     if (typeof window === "undefined") {
       return { redirectUrl: null, login: null };
@@ -19,17 +18,7 @@ export function VerifySuccessClient({ sessionId }: { sessionId: string }) {
 
   useEffect(() => {
     if (!redirectUrl) return;
-    const timer = window.setInterval(() => {
-      setSecondsLeft((current) => {
-        if (current <= 1) {
-          window.clearInterval(timer);
-          window.location.assign(redirectUrl);
-          return 0;
-        }
-        return current - 1;
-      });
-    }, 1000);
-    return () => window.clearInterval(timer);
+    window.location.replace(redirectUrl);
   }, [redirectUrl]);
 
   return (
@@ -64,7 +53,7 @@ export function VerifySuccessClient({ sessionId }: { sessionId: string }) {
             >
               Return to GitHub now
             </a>
-            <p className="text-sm text-slate-500">Auto-redirecting in {secondsLeft}s…</p>
+            <p className="text-sm text-slate-500">Sending you back to GitHub…</p>
           </div>
         ) : (
           <Link
