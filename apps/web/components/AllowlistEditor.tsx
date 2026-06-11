@@ -1,14 +1,20 @@
 "use client";
 
-import { useState } from "react";
-import { apiFetch, type TrustedUser } from "../lib/api";
+import { useEffect, useState } from "react";
+import { apiFetch, type RepoPolicyResponse, type TrustedUser } from "../lib/api";
 
-export function AllowlistEditor({ repoId, initialUsers }: { repoId: string; initialUsers: TrustedUser[] }) {
-  const [users, setUsers] = useState(initialUsers);
+export function AllowlistEditor({ repoId }: { repoId: string }) {
+  const [users, setUsers] = useState<TrustedUser[]>([]);
   const [user, setUser] = useState("");
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    apiFetch<RepoPolicyResponse>(`/api/repos/${encodeURIComponent(repoId)}`)
+      .then((repo) => setUsers(repo.trusted_users ?? []))
+      .catch((err: Error) => setError(err.message));
+  }, [repoId]);
 
   async function addUser() {
     if (!user.trim()) return;
