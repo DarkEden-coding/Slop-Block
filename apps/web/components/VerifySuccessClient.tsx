@@ -1,10 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { VerifyShell } from "./VerifyShell";
 
+const redirectDelaySeconds = 3;
+
 export function VerifySuccessClient({ sessionId }: { sessionId: string }) {
+  const [secondsRemaining, setSecondsRemaining] = useState(redirectDelaySeconds);
   const { redirectUrl, login } = useMemo(() => {
     if (typeof window === "undefined") {
       return { redirectUrl: null, login: null };
@@ -18,8 +21,23 @@ export function VerifySuccessClient({ sessionId }: { sessionId: string }) {
 
   useEffect(() => {
     if (!redirectUrl) return;
-    window.location.replace(redirectUrl);
+
+    setSecondsRemaining(redirectDelaySeconds);
+    const intervalId = window.setInterval(() => {
+      setSecondsRemaining((current) => Math.max(current - 1, 0));
+    }, 1000);
+    const timeoutId = window.setTimeout(() => {
+      window.location.replace(redirectUrl);
+    }, redirectDelaySeconds * 1000);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.clearTimeout(timeoutId);
+    };
   }, [redirectUrl]);
+
+  const githubHref = redirectUrl ?? "https://github.com";
+  const countdownProgress = ((redirectDelaySeconds - secondsRemaining) / redirectDelaySeconds) * 100;
 
   return (
     <VerifyShell
@@ -45,24 +63,28 @@ export function VerifySuccessClient({ sessionId }: { sessionId: string }) {
           The app will update labels, checks, and verification comments on GitHub shortly.
         </p>
 
-        {redirectUrl ? (
-          <div className="flex flex-wrap items-center gap-3">
-            <a
-              href={redirectUrl}
-              className="inline-flex h-11 items-center justify-center rounded-xl bg-cyan-300 px-5 text-sm font-bold text-slate-950 shadow-lg shadow-cyan-950/30 transition hover:-translate-y-0.5 hover:bg-cyan-200"
-            >
-              Return to GitHub now
-            </a>
-            <p className="text-sm text-slate-500">Sending you back to GitHub…</p>
-          </div>
-        ) : (
+        <div className="flex flex-wrap items-center gap-3">
           <Link
-            href="/"
-            className="inline-flex h-11 items-center justify-center rounded-xl border border-white/10 bg-white/5 px-5 text-sm font-semibold text-slate-100 transition hover:border-cyan-300/40 hover:bg-white/10"
+            href={githubHref}
+            className="inline-flex h-11 items-center justify-center rounded-xl bg-cyan-300 px-5 text-sm font-bold text-slate-950 shadow-lg shadow-cyan-950/30 transition hover:-translate-y-0.5 hover:bg-cyan-200"
           >
-            Back home
+            Back to GitHub
           </Link>
-        )}
+          {redirectUrl ? (
+            <div className="flex items-center gap-3 text-sm text-slate-400">
+              <span
+                className="grid size-9 place-items-center rounded-full text-xs font-bold text-cyan-100"
+                style={{
+                  background: `conic-gradient(rgb(103 232 249) ${countdownProgress}%, rgb(30 41 59) ${countdownProgress}%)`,
+                }}
+                aria-label={`Returning to GitHub in ${secondsRemaining} seconds`}
+              >
+                <span className="grid size-7 place-items-center rounded-full bg-slate-950">{secondsRemaining}</span>
+              </span>
+              <span>Returning to GitHub in {secondsRemaining}s</span>
+            </div>
+          ) : null}
+        </div>
 
         <p className="text-xs text-slate-500">Session {sessionId}</p>
       </div>
