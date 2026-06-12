@@ -15,7 +15,10 @@ use crate::{AppState, ErrorBody, ErrorDetail};
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/captcha/config", get(get_public_config))
-        .route("/api/settings/captcha", get(get_settings).put(update_settings))
+        .route(
+            "/api/settings/captcha",
+            get(get_settings).put(update_settings),
+        )
 }
 
 async fn get_public_config(

@@ -133,7 +133,8 @@ fn env_field(config: &Config, provider_id: &str, field: &str) -> Option<String> 
 }
 
 fn resolve_site_key(config: &Config, stored: Option<&Value>, provider_id: &str) -> Option<String> {
-    stored_field(stored, provider_id, "site_key").or_else(|| env_field(config, provider_id, "site_key"))
+    stored_field(stored, provider_id, "site_key")
+        .or_else(|| env_field(config, provider_id, "site_key"))
 }
 
 fn resolve_secret(config: &Config, stored: Option<&Value>, provider_id: &str) -> Option<String> {
@@ -142,7 +143,11 @@ fn resolve_secret(config: &Config, stored: Option<&Value>, provider_id: &str) ->
         .or_else(|| env_field(config, provider_id, "secret"))
 }
 
-fn resolve_credentials(config: &Config, stored: Option<&Value>, provider_id: &str) -> Option<ProviderCredentials> {
+fn resolve_credentials(
+    config: &Config,
+    stored: Option<&Value>,
+    provider_id: &str,
+) -> Option<ProviderCredentials> {
     let site_key = resolve_site_key(config, stored, provider_id)?;
     let secret = resolve_secret(config, stored, provider_id)?;
     let source = if stored_field(stored, provider_id, "site_key").is_some()
@@ -237,10 +242,7 @@ pub fn parse_stored_preferences(
     configured_ids: &[String],
 ) -> (Vec<String>, Option<String>) {
     let Some(value) = stored else {
-        return (
-            configured_ids.to_vec(),
-            configured_ids.first().cloned(),
-        );
+        return (configured_ids.to_vec(), configured_ids.first().cloned());
     };
     let enabled = value
         .get("enabled_providers")
@@ -285,7 +287,10 @@ pub fn public_config(settings: &CaptchaSettings) -> CaptchaPublicConfig {
         .iter()
         .filter(|provider| {
             settings.enabled_providers.contains(&provider.id)
-                && provider.site_key.as_ref().is_some_and(|key| !key.is_empty())
+                && provider
+                    .site_key
+                    .as_ref()
+                    .is_some_and(|key| !key.is_empty())
         })
         .map(|provider| CaptchaPublicProvider {
             id: provider.id.clone(),
@@ -328,7 +333,10 @@ pub fn session_captcha_config(
             alternate_providers: Vec::new(),
         });
     }
-    let provider = settings.available_providers.iter().find(|p| p.id == provider_id)?;
+    let provider = settings
+        .available_providers
+        .iter()
+        .find(|p| p.id == provider_id)?;
     let site_key = provider.site_key.clone().filter(|key| !key.is_empty())?;
     let alternate_providers = public_config(settings)
         .providers
@@ -386,7 +394,10 @@ pub fn merge_settings_update(
         .ok_or_else(|| "stored captcha provider settings are invalid".to_string())?;
 
     for (provider_id, credentials) in &update.providers {
-        if !PROVIDER_CATALOG.iter().any(|(id, _)| *id == provider_id.as_str()) {
+        if !PROVIDER_CATALOG
+            .iter()
+            .any(|(id, _)| *id == provider_id.as_str())
+        {
             continue;
         }
         let entry = provider_map
@@ -415,13 +426,12 @@ pub fn merge_settings_update(
     }
 
     let configured_ids = configured_provider_ids(config, Some(&value));
-    let (enabled_providers, default_provider) = if update.enabled_providers.is_empty()
-        && update.default_provider.is_none()
-    {
-        parse_stored_preferences(Some(&value), &configured_ids)
-    } else {
-        validate_preferences_update(update, &configured_ids)?
-    };
+    let (enabled_providers, default_provider) =
+        if update.enabled_providers.is_empty() && update.default_provider.is_none() {
+            parse_stored_preferences(Some(&value), &configured_ids)
+        } else {
+            validate_preferences_update(update, &configured_ids)?
+        };
 
     let root = value.as_object_mut().unwrap();
     root.insert("enabled_providers".into(), json!(enabled_providers));

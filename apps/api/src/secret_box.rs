@@ -11,10 +11,9 @@ const VERSION_PREFIX: &str = "v1";
 /// Returns an error string when no `SECRETS_ENCRYPTION_KEY` is configured so callers can
 /// refuse to persist plaintext secrets.
 pub fn encrypt_field(config: &Config, plaintext: &str) -> Result<String, String> {
-    let key = config
-        .secrets_encryption_key
-        .as_deref()
-        .ok_or_else(|| "SECRETS_ENCRYPTION_KEY must be set to store provider secrets".to_string())?;
+    let key = config.secrets_encryption_key.as_deref().ok_or_else(|| {
+        "SECRETS_ENCRYPTION_KEY must be set to store provider secrets".to_string()
+    })?;
     let cipher = ChaCha20Poly1305::new_from_slice(key)
         .map_err(|_| "SECRETS_ENCRYPTION_KEY is not a valid 32-byte key".to_string())?;
     let mut nonce_bytes = [0_u8; 12];
@@ -89,7 +88,10 @@ mod tests {
         let encrypted = encrypt_field(&config, "super-secret").unwrap();
         assert!(encrypted.starts_with("v1."));
         assert_ne!(encrypted, "super-secret");
-        assert_eq!(decrypt_field(&config, &encrypted).as_deref(), Some("super-secret"));
+        assert_eq!(
+            decrypt_field(&config, &encrypted).as_deref(),
+            Some("super-secret")
+        );
     }
 
     #[test]

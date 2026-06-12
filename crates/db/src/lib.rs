@@ -434,11 +434,10 @@ pub async fn complete_job(pool: &PgPool, id: i64) -> Result<Option<Job>> {
 }
 
 pub async fn get_app_setting(pool: &PgPool, key: &str) -> Result<Option<Value>> {
-    let row: Option<(Value,)> =
-        sqlx::query_as("SELECT value FROM app_settings WHERE key=$1")
-            .bind(key)
-            .fetch_optional(pool)
-            .await?;
+    let row: Option<(Value,)> = sqlx::query_as("SELECT value FROM app_settings WHERE key=$1")
+        .bind(key)
+        .fetch_optional(pool)
+        .await?;
     Ok(row.map(|(value,)| value))
 }
 
