@@ -403,6 +403,11 @@ async fn post_captcha(
     if !cap.success {
         return Err(OAuthError::CaptchaFailed);
     }
+    if let Some(hostname) = cap.hostname.as_deref() {
+        if !captcha_config::hostname_allowed(&state.config, hostname) {
+            return Err(OAuthError::CaptchaFailed);
+        }
+    }
     let done = db::complete_verification_session(pool, session_id, &hash)
         .await?
         .ok_or(OAuthError::InvalidSession)?;

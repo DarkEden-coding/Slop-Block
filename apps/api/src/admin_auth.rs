@@ -18,6 +18,9 @@ use crate::AppState;
 
 type HmacSha256 = Hmac<Sha256>;
 const ADMIN_OAUTH_STATE_COOKIE: &str = "gho_admin_oauth_state";
+// Sessions are stateless HMAC cookies with no server-side revocation, so keep the
+// window short; re-authentication is a single GitHub OAuth redirect.
+const ADMIN_SESSION_TTL_SECONDS: i64 = 86_400;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -119,7 +122,15 @@ pub async fn handle_shared_oauth_callback(
     code: &str,
     st: &str,
 ) -> Option<Response> {
-    find_cookie(headers, ADMIN_OAUTH_STATE_COOKIE)?;
+    // Only claim the shared callback when the state actually belongs to the admin flow;
+    // a stale admin state cookie must not intercept a contributor verification callback.
+    let cookie_value = find_cookie(headers, ADMIN_OAUTH_STATE_COOKIE)?;
+    let (cookie_state, _) = cookie_value
+        .split_once('.')
+        .unwrap_or((cookie_value.as_str(), ""));
+    if cookie_state != st {
+        return None;
+    }
     Some(
         process_admin_oauth_callback(state, headers, code, st, &shared_oauth_callback_url(state))
             .await
@@ -177,7 +188,7 @@ async fn process_admin_oauth_callback(
     };
     let session = encode_session(state, &admin).ok_or(AdminAuthError::NotConfigured)?;
     let cookie = format!(
-        "{}={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800{}",
+        "{}={}; Path=/; HttpOnly; SameSite=Lax; Max-Age={ADMIN_SESSION_TTL_SECONDS}{}",
         state.config.admin_session_cookie_name,
         session,
         secure_suffix(state)
@@ -243,7 +254,7 @@ fn encode_session(state: &AppState, user: &AdminUser) -> Option<String> {
     let secret = session_secret(state)?;
     let payload = serde_json::to_vec(&SessionPayload {
         v: 1,
-        exp: OffsetDateTime::now_utc().unix_timestamp() + 604_800,
+        exp: OffsetDateTime::now_utc().unix_timestamp() + ADMIN_SESSION_TTL_SECONDS,
         user,
     })
     .ok()?;

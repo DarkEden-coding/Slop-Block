@@ -33,6 +33,9 @@ pub fn encrypt_field(config: &Config, plaintext: &str) -> Result<String, String>
 /// and returned unchanged. Returns `None` when an encrypted value cannot be decrypted.
 pub fn decrypt_field(config: &Config, value: &str) -> Option<String> {
     let Some(rest) = value.strip_prefix(&format!("{VERSION_PREFIX}.")) else {
+        tracing::warn!(
+            "stored provider secret is legacy plaintext; re-save it via the dashboard so it is encrypted at rest"
+        );
         return Some(value.to_string());
     };
     let (nonce_b64, ct_b64) = rest.split_once('.')?;

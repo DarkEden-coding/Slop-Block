@@ -6,7 +6,7 @@ GitHub Human Auth is designed for self-hosting. There is no hosted paid dependen
 
 The service should be treated as sensitive infrastructure because it receives GitHub webhook payloads and stores verification state. For private repositories:
 
-- Store only the minimum repository, issue/PR, user, policy, session, and allowlist data required for verification and auditability.
+- Store only the minimum repository, issue/PR, user, policy, session, and allowlist data required for verification and auditability. Webhook events are persisted as trimmed routing summaries (action, ids, sender); issue/PR titles and bodies are never written to the database.
 - Do not mirror repository contents.
 - Do not log private issue/PR bodies, secrets, OAuth tokens, private keys, or webhook payloads at debug level in production.
 - Restrict dashboard/API access to trusted maintainers and private networks where possible.
@@ -20,8 +20,9 @@ Configure the GitHub App with the minimal permissions listed in [GitHub App setu
 Operational least privilege:
 
 - Run containers as non-root where your platform supports it.
-- Do not expose PostgreSQL to the public internet.
+- Do not expose PostgreSQL to the public internet. The provided `docker-compose.yml` binds it to `127.0.0.1` only; keep it that way and use a strong unique password.
 - Restrict inbound traffic to the web and API ports only.
+- The API rate-limits the unauthenticated OAuth and CAPTCHA verification endpoints per client IP (Cloudflare/proxy forwarding headers are honored); add reverse-proxy limits for additional headroom.
 - Use separate development, staging, and production GitHub Apps and databases.
 - Rotate credentials when team members leave or logs/secrets may have been exposed.
 

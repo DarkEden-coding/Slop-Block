@@ -349,6 +349,22 @@ pub fn session_captcha_config(
     })
 }
 
+/// Defense in depth: when the siteverify response reports the hostname the challenge
+/// was solved on, require it to match the host serving our verification pages.
+pub fn hostname_allowed(config: &Config, reported: &str) -> bool {
+    match url_host(&config.web_base_url) {
+        Some(expected) => expected.eq_ignore_ascii_case(reported.trim()),
+        None => true,
+    }
+}
+
+fn url_host(url: &str) -> Option<String> {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let host = authority.rsplit('@').next()?.split(':').next()?;
+    (!host.is_empty()).then(|| host.to_ascii_lowercase())
+}
+
 pub async fn verify_token(
     config: &Arc<Config>,
     stored: Option<&Value>,
@@ -512,6 +528,14 @@ mod tests {
             admin_session_secret: None,
             secrets_encryption_key: Some(vec![9_u8; 32]),
         }
+    }
+
+    #[test]
+    fn validates_captcha_hostname_against_web_base_url() {
+        let mut config = test_config();
+        config.web_base_url = "https://app.example.com:8443/some/path".into();
+        assert!(hostname_allowed(&config, "App.Example.Com"));
+        assert!(!hostname_allowed(&config, "evil.example.net"));
     }
 
     #[test]

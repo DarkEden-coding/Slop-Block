@@ -55,7 +55,7 @@ pub async fn handle_github_webhook(
         &event_type,
         installation_id,
         repository_id,
-        payload.clone(),
+        payload_summary(&payload),
     )
     .await
     .map_err(WebhookError::Db)?;
@@ -469,6 +469,20 @@ async fn process_subject_event(
     Ok(())
 }
 
+/// GitHub payloads can include private repository content (issue/PR titles and bodies).
+/// Persist only the minimal routing fields so sensitive data never lands in the database.
+fn payload_summary(payload: &Value) -> Value {
+    json!({
+        "action": payload.get("action"),
+        "installation_id": payload.pointer("/installation/id"),
+        "repository_id": payload.pointer("/repository/id"),
+        "repository": payload.pointer("/repository/full_name"),
+        "sender": payload.pointer("/sender/login"),
+        "issue_number": payload.pointer("/issue/number"),
+        "pull_request_number": payload.pointer("/pull_request/number"),
+    })
+}
+
 async fn upsert_installation_from_payload(
     pool: &db::PgPool,
     payload: &Value,
@@ -493,7 +507,11 @@ async fn upsert_installation_from_payload(
         account_login,
         account_id,
         account_type,
-        installation.clone(),
+        json!({
+            "id": installation_id,
+            "account": {"login": account_login, "id": account_id, "type": account_type},
+            "app_id": installation.get("app_id"),
+        }),
     )
     .await
     .map_err(WebhookError::Db)?;
@@ -536,7 +554,13 @@ async fn upsert_repository_from_value(
         full_name,
         private,
         default_branch,
-        repo.clone(),
+        json!({
+            "id": repository_id,
+            "full_name": full_name,
+            "private": private,
+            "default_branch": default_branch,
+            "owner": {"login": owner},
+        }),
     )
     .await
     .map_err(WebhookError::Db)?;

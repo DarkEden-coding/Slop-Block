@@ -127,13 +127,7 @@ async fn get_repo_policy(
 ) -> Result<Json<RepositoryPolicyResponse>, PolicyRouteError> {
     ensure_admin(&state, &headers)?;
     let pool = state.db.as_ref().ok_or(PolicyRouteError::NoDb)?;
-    let repo = sqlx::query_as::<_, db::GithubRepository>(
-        "SELECT * FROM github_repositories WHERE repository_id=$1 OR id=$1",
-    )
-    .bind(repo_id)
-    .fetch_optional(pool)
-    .await?
-    .ok_or(PolicyRouteError::NotFound)?;
+    let repo = find_repo(pool, repo_id).await?;
 
     let stored = db::get_policy(pool, repo.repository_id).await?;
     let (enabled, policy) = match stored {
@@ -162,13 +156,7 @@ async fn upsert_repo_policy(
 ) -> Result<Json<RepositoryPolicyResponse>, PolicyRouteError> {
     ensure_admin(&state, &headers)?;
     let pool = state.db.as_ref().ok_or(PolicyRouteError::NoDb)?;
-    let repo = sqlx::query_as::<_, db::GithubRepository>(
-        "SELECT * FROM github_repositories WHERE repository_id=$1 OR id=$1",
-    )
-    .bind(repo_id)
-    .fetch_optional(pool)
-    .await?
-    .ok_or(PolicyRouteError::NotFound)?;
+    let repo = find_repo(pool, repo_id).await?;
 
     let policy_value =
         serde_json::to_value(&req.policy).map_err(|_| PolicyRouteError::InvalidPolicy)?;
@@ -242,8 +230,10 @@ async fn find_repo(
     pool: &db::PgPool,
     repo_id: i64,
 ) -> Result<db::GithubRepository, PolicyRouteError> {
+    // Prefer the GitHub repository id over the internal serial id so a collision
+    // between the two can never resolve to the wrong repository.
     sqlx::query_as::<_, db::GithubRepository>(
-        "SELECT * FROM github_repositories WHERE repository_id=$1 OR id=$1",
+        "SELECT * FROM github_repositories WHERE repository_id=$1 OR id=$1 ORDER BY (repository_id=$1) DESC LIMIT 1",
     )
     .bind(repo_id)
     .fetch_optional(pool)

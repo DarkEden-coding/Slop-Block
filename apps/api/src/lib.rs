@@ -4,6 +4,7 @@ pub mod captcha_routes;
 pub mod job_runner;
 pub mod oauth;
 pub mod policy_routes;
+pub mod rate_limit;
 pub mod secret_box;
 pub mod webhooks;
 
@@ -266,13 +267,18 @@ pub enum ConfigError {
 pub struct AppState {
     pub config: Arc<Config>,
     pub db: Option<PgPool>,
+    pub rate_limiter: Arc<rate_limit::RateLimiter>,
 }
+
+const RATE_LIMIT_MAX_REQUESTS: u32 = 60;
+const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 
 impl AppState {
     pub fn new(config: Config, db: PgPool) -> Self {
         Self {
             config: Arc::new(config),
             db: Some(db),
+            rate_limiter: Self::default_rate_limiter(),
         }
     }
 
@@ -280,19 +286,35 @@ impl AppState {
         Self {
             config: Arc::new(config),
             db: None,
+            rate_limiter: Self::default_rate_limiter(),
         }
+    }
+
+    fn default_rate_limiter() -> Arc<rate_limit::RateLimiter> {
+        Arc::new(rate_limit::RateLimiter::new(
+            RATE_LIMIT_MAX_REQUESTS,
+            RATE_LIMIT_WINDOW,
+        ))
     }
 }
 
 pub fn router(state: AppState) -> Router {
+    // Unauthenticated routes that relay to GitHub or CAPTCHA providers get per-client
+    // rate limiting. Webhooks are excluded (signature-verified, sender is GitHub).
+    let rate_limited = Router::new()
+        .merge(admin_auth::routes())
+        .merge(oauth::routes())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit::rate_limit_middleware,
+        ));
     Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
-        .merge(admin_auth::routes())
+        .merge(rate_limited)
         .merge(policy_routes::router())
         .merge(captcha_routes::router())
         .merge(webhooks::routes())
-        .merge(oauth::routes())
         .layer(cors_layer(&state.config))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
