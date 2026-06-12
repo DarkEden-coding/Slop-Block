@@ -206,9 +206,7 @@ fn provider_infos(config: &Config, stored: Option<&Value>) -> Vec<CaptchaProvide
                 || stored_field(stored, id, "secret").is_some()
             {
                 Some(CredentialsSource::Dashboard)
-            } else if configured {
-                Some(CredentialsSource::Environment)
-            } else if secret_set || site_key.is_some() {
+            } else if configured || secret_set || site_key.is_some() {
                 Some(CredentialsSource::Environment)
             } else {
                 None
@@ -470,7 +468,7 @@ pub fn validate_settings_update(
     config: &Config,
     stored: Option<&Value>,
 ) -> Result<(), String> {
-    let merged = merge_settings_update(stored.map(Clone::clone), update, config)?;
+    let merged = merge_settings_update(stored.cloned(), update, config)?;
     let configured_ids = configured_provider_ids(config, Some(&merged));
     let (enabled, _) = parse_stored_preferences(Some(&merged), &configured_ids);
     if enabled.is_empty() {
