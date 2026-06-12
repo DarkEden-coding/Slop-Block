@@ -88,7 +88,12 @@ pub fn token_hash(token: &str) -> String {
     hex::encode(Sha256::digest(token.as_bytes()))
 }
 
-pub fn encode_state_cookie(session_id: Uuid, token_hash: &str, state: &str, session_token: &str) -> String {
+pub fn encode_state_cookie(
+    session_id: Uuid,
+    token_hash: &str,
+    state: &str,
+    session_token: &str,
+) -> String {
     format!("{session_id}:{token_hash}:{state}:{session_token}")
 }
 
@@ -148,9 +153,16 @@ fn verify_response(
     } else {
         None
     };
-    let issue_or_pr_url = repo
-        .as_deref()
-        .and_then(|full_name| subject_url(full_name, &session.subject_type, &session.subject_id));
+    let issue_or_pr_url = session
+        .metadata
+        .get("subject_url")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .or_else(|| {
+            repo.as_deref().and_then(|full_name| {
+                subject_url(full_name, &session.subject_type, &session.subject_id)
+            })
+        });
     VerifyResponse {
         session_id,
         status: session.status.clone(),
@@ -287,7 +299,11 @@ async fn oauth_callback(
             "github_user_mismatch",
         ));
     }
-    if let Some(expected_login) = session.metadata.get("login").and_then(|value| value.as_str()) {
+    if let Some(expected_login) = session
+        .metadata
+        .get("login")
+        .and_then(|value| value.as_str())
+    {
         if !expected_login.eq_ignore_ascii_case(&user.login) {
             return Ok(redirect_verify(
                 &state,
@@ -327,8 +343,8 @@ async fn get_verify(
         .ok_or(OAuthError::NotFound)?;
     let policy = load_repo_policy(pool, s.repository_id).await;
     let settings = captcha_config::load_settings(&state).await;
-    let provider_id = captcha_config::resolve_provider_id(&settings, &policy)
-        .ok_or(OAuthError::NotConfigured)?;
+    let provider_id =
+        captcha_config::resolve_provider_id(&settings, &policy).ok_or(OAuthError::NotConfigured)?;
     let captcha = captcha_config::session_captcha_config(&settings, &provider_id);
     let repo = db::get_repository(pool, s.repository_id)
         .await?
@@ -369,7 +385,10 @@ async fn post_captcha(
         .clone()
         .or_else(|| captcha_config::resolve_provider_id(&settings, &policy))
         .ok_or(OAuthError::NotConfigured)?;
-    if !settings.enabled_providers.contains(&provider_id.to_string()) {
+    if !settings
+        .enabled_providers
+        .contains(&provider_id.to_string())
+    {
         return Err(OAuthError::BadRequest);
     }
     let cap = if state.config.turnstile_dev_bypass && provider_id == PROVIDER_DEV_BYPASS {
@@ -583,7 +602,8 @@ impl IntoResponse for OAuthError {
             | OAuthError::InvalidSession
             | OAuthError::CaptchaFailed
             | OAuthError::OAuthRequired => StatusCode::BAD_REQUEST,
-            OAuthError::NotConfigured | OAuthError::Captcha(captcha::CaptchaError::NotConfigured) => {
+            OAuthError::NotConfigured
+            | OAuthError::Captcha(captcha::CaptchaError::NotConfigured) => {
                 StatusCode::SERVICE_UNAVAILABLE
             }
             _ => StatusCode::BAD_GATEWAY,

@@ -173,6 +173,7 @@ struct HookInstallation {
 #[derive(Debug, Deserialize)]
 struct HookIssue {
     number: u64,
+    html_url: String,
     user: HookUser,
 }
 #[derive(Debug, Deserialize)]
@@ -182,6 +183,7 @@ struct HookPrHead {
 #[derive(Debug, Deserialize)]
 struct HookPr {
     number: u64,
+    html_url: String,
     user: HookUser,
     head: HookPrHead,
 }
@@ -204,6 +206,7 @@ struct SubjectEvent {
     target: policy::TargetKind,
     subject_type: &'static str,
     number: u64,
+    html_url: String,
     head_sha: Option<String>,
     user: HookUser,
     repo: HookRepo,
@@ -215,6 +218,7 @@ impl IssueLikeEvent {
             target: policy::TargetKind::Issue,
             subject_type: "issue",
             number: self.issue.number,
+            html_url: self.issue.html_url,
             head_sha: None,
             user: self.issue.user,
             repo: self.repository,
@@ -228,6 +232,7 @@ impl PrLikeEvent {
             target: policy::TargetKind::PullRequest,
             subject_type: "pull_request",
             number: self.pull_request.number,
+            html_url: self.pull_request.html_url,
             head_sha: Some(self.pull_request.head.sha),
             user: self.pull_request.user,
             repo: self.repository,
@@ -352,7 +357,7 @@ async fn process_subject_event(
         Some(ev.user.id),
         &token_hash,
         OffsetDateTime::now_utc() + Duration::hours(24),
-        json!({"login": ev.user.login}),
+        json!({"login": ev.user.login, "subject_url": ev.html_url}),
     )
     .await
     .map_err(WebhookError::Db)?;
