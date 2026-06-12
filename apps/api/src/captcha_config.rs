@@ -137,7 +137,9 @@ fn resolve_site_key(config: &Config, stored: Option<&Value>, provider_id: &str) 
 }
 
 fn resolve_secret(config: &Config, stored: Option<&Value>, provider_id: &str) -> Option<String> {
-    stored_field(stored, provider_id, "secret").or_else(|| env_field(config, provider_id, "secret"))
+    stored_field(stored, provider_id, "secret")
+        .and_then(|value| crate::secret_box::decrypt_field(config, &value))
+        .or_else(|| env_field(config, provider_id, "secret"))
 }
 
 fn resolve_credentials(config: &Config, stored: Option<&Value>, provider_id: &str) -> Option<ProviderCredentials> {
@@ -407,7 +409,8 @@ pub fn merge_settings_update(
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
         {
-            entry_obj.insert("secret".into(), json!(secret));
+            let encrypted = crate::secret_box::encrypt_field(config, &secret)?;
+            entry_obj.insert("secret".into(), json!(encrypted));
         }
     }
 
@@ -499,6 +502,7 @@ mod tests {
             admin_github_logins: vec![],
             admin_session_cookie_name: "gho_admin_session".into(),
             admin_session_secret: None,
+            secrets_encryption_key: Some(vec![9_u8; 32]),
         }
     }
 

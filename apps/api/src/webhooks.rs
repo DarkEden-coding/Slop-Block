@@ -356,7 +356,7 @@ async fn process_subject_event(
         &ev.number.to_string(),
         Some(ev.user.id),
         &token_hash,
-        OffsetDateTime::now_utc() + Duration::hours(24),
+        OffsetDateTime::now_utc() + Duration::hours(1),
         json!({"login": ev.user.login, "subject_url": ev.html_url}),
     )
     .await
@@ -657,6 +657,7 @@ mod tests {
             admin_github_logins: vec![],
             admin_session_cookie_name: "gho_admin_session".into(),
             admin_session_secret: None,
+            secrets_encryption_key: None,
         })
     }
 

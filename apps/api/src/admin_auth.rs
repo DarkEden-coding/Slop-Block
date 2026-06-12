@@ -223,13 +223,7 @@ pub fn authorize_admin(state: &AppState, headers: &HeaderMap) -> bool {
             }
         }
     }
-    if current_admin_user(state, headers).is_some() {
-        return true;
-    }
-    // Preserve unauthenticated local/dev dashboard behavior until OAuth or an admin token is configured.
-    state.config.admin_api_token.is_none()
-        && state.config.github_oauth_client_id.is_none()
-        && state.config.github_oauth_client_secret.is_none()
+    current_admin_user(state, headers).is_some()
 }
 
 pub fn current_admin_user(state: &AppState, headers: &HeaderMap) -> Option<AdminUser> {
@@ -279,12 +273,7 @@ fn decode_session(state: &AppState, raw: &str) -> Option<AdminUser> {
 }
 
 fn session_secret(state: &AppState) -> Option<&str> {
-    state
-        .config
-        .admin_session_secret
-        .as_deref()
-        .or(state.config.github_oauth_client_secret.as_deref())
-        .or(state.config.admin_api_token.as_deref())
+    state.config.admin_session_secret.as_deref()
 }
 
 fn sign(secret: &str, msg: &[u8]) -> Option<String> {
@@ -294,12 +283,13 @@ fn sign(secret: &str, msg: &[u8]) -> Option<String> {
 }
 
 fn is_allowed_login(state: &AppState, login: &str) -> bool {
-    state.config.admin_github_logins.is_empty()
-        || state
-            .config
-            .admin_github_logins
-            .iter()
-            .any(|allowed| allowed.eq_ignore_ascii_case(login))
+    // Fail closed: an empty allowlist authorizes nobody. Config validation already requires a
+    // non-empty allowlist whenever OAuth admin login is enabled.
+    state
+        .config
+        .admin_github_logins
+        .iter()
+        .any(|allowed| allowed.eq_ignore_ascii_case(login))
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<&str> {

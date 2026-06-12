@@ -14,8 +14,9 @@ GitHub Human Auth is configured with environment variables. Copy `.env.example` 
 | `GITHUB_OAUTH_CLIENT_SECRET` | OAuth client secret from the same GitHub App. |
 | `TURNSTILE_SECRET` | Cloudflare Turnstile secret key for CAPTCHA verification. |
 | `ADMIN_API_TOKEN` | Optional legacy bearer token for machine access to policy and allowlist administration endpoints. Use at least 32 random characters in production. |
-| `ADMIN_GITHUB_LOGINS` | Optional comma-separated GitHub logins allowed to use the browser dashboard. If empty, any GitHub-authenticated user can sign in. Set this in production. |
-| `ADMIN_SESSION_SECRET` | Optional secret used to sign dashboard browser sessions. Use at least 32 random characters. If unset, the OAuth client secret is used. |
+| `ADMIN_GITHUB_LOGINS` | Comma-separated GitHub logins allowed to use the browser dashboard. Required (at least one) when OAuth is configured; an empty list authorizes nobody. |
+| `ADMIN_SESSION_SECRET` | Secret used to sign dashboard browser sessions (>=32 chars). Required when OAuth is configured; there is no fallback to the OAuth client secret. |
+| `SECRETS_ENCRYPTION_KEY` | Base64-encoded 32-byte key used to encrypt dashboard-managed CAPTCHA secrets at rest. Required to save provider secrets via the dashboard. Generate with `openssl rand -base64 32`. |
 
 ## Service and URL variables
 

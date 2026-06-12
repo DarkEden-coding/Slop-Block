@@ -4,6 +4,7 @@ pub mod captcha_routes;
 pub mod job_runner;
 pub mod oauth;
 pub mod policy_routes;
+pub mod secret_box;
 pub mod webhooks;
 
 use axum::{
@@ -13,6 +14,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
+use base64::Engine as _;
 use db::PgPool;
 use serde::{Deserialize, Serialize};
 use std::{env, net::SocketAddr, sync::Arc, time::Duration};
@@ -47,6 +49,7 @@ pub struct Config {
     pub admin_github_logins: Vec<String>,
     pub admin_session_cookie_name: String,
     pub admin_session_secret: Option<String>,
+    pub secrets_encryption_key: Option<Vec<u8>>,
 }
 
 impl Config {
@@ -168,6 +171,41 @@ impl Config {
             ));
         }
 
+        let secrets_encryption_key = match get("SECRETS_ENCRYPTION_KEY").filter(|v| !v.is_empty()) {
+            Some(raw) => {
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(raw.trim())
+                    .map_err(|_| {
+                        ConfigError::Invalid("SECRETS_ENCRYPTION_KEY must be base64-encoded")
+                    })?;
+                if bytes.len() != 32 {
+                    return Err(ConfigError::Invalid(
+                        "SECRETS_ENCRYPTION_KEY must decode to exactly 32 bytes",
+                    ));
+                }
+                Some(bytes)
+            }
+            None => None,
+        };
+
+        // Fail closed: when GitHub OAuth is configured (the production posture), require an
+        // explicit admin session signing secret and an explicit admin allowlist so a missing
+        // value can never degrade into an open dashboard.
+        let oauth_configured =
+            github_oauth_client_id.is_some() && github_oauth_client_secret.is_some();
+        if oauth_configured {
+            if admin_session_secret.is_none() {
+                return Err(ConfigError::Invalid(
+                    "ADMIN_SESSION_SECRET is required when GITHUB_OAUTH_CLIENT_ID/SECRET are set",
+                ));
+            }
+            if admin_github_logins.is_empty() {
+                return Err(ConfigError::Invalid(
+                    "ADMIN_GITHUB_LOGINS must list at least one login when GitHub OAuth is set",
+                ));
+            }
+        }
+
         Ok(Self {
             host,
             port,
@@ -195,6 +233,7 @@ impl Config {
             admin_github_logins,
             admin_session_cookie_name,
             admin_session_secret,
+            secrets_encryption_key,
         })
     }
 

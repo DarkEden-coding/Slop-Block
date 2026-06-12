@@ -26,8 +26,6 @@ pub struct GithubInstallation {
     pub account_login: String,
     pub account_id: Option<i64>,
     pub account_type: Option<String>,
-    pub access_token: Option<String>,
-    pub access_token_expires_at: Option<OffsetDateTime>,
     pub raw: Value,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
