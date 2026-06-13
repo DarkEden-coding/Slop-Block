@@ -364,7 +364,15 @@ async fn process_subject_event(
     .await
     .map_err(WebhookError::Db)?;
 
-    let verify_url = source_verify_url(state, repo.repository_id, ev.subject_type, ev.number, ev.user.id, &ev.user.login, &ev.html_url)?;
+    let verify_url = source_verify_url(
+        state,
+        repo.repository_id,
+        ev.subject_type,
+        ev.number,
+        ev.user.id,
+        &ev.user.login,
+        &ev.html_url,
+    )?;
 
     for label in [policy.apply_label.as_ref(), policy.pending_label.as_ref()]
         .into_iter()
@@ -580,7 +588,8 @@ fn source_verify_url(
         .as_ref()
         .or(state.config.github_webhook_secret.as_ref())
         .ok_or(WebhookError::GitHubNotConfigured)?;
-    let payload = format!("{repository_id}|{subject_type}|{number}|{github_user_id}|{login}|{subject_url}");
+    let payload =
+        format!("{repository_id}|{subject_type}|{number}|{github_user_id}|{login}|{subject_url}");
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
         .map_err(|_| WebhookError::GitHubNotConfigured)?;
     mac.update(payload.as_bytes());

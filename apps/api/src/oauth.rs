@@ -412,8 +412,12 @@ async fn verify_from_source(
         .ok_or(OAuthError::NotConfigured)?
         .clone();
     let expected = {
-        let payload = format!("{}|{}|{}|{}|{}|{}", q.repo, q.subject_type, q.number, q.user_id, q.login, q.url);
-        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).map_err(|_| OAuthError::NotConfigured)?;
+        let payload = format!(
+            "{}|{}|{}|{}|{}|{}",
+            q.repo, q.subject_type, q.number, q.user_id, q.login, q.url
+        );
+        let mut mac =
+            HmacSha256::new_from_slice(secret.as_bytes()).map_err(|_| OAuthError::NotConfigured)?;
         mac.update(payload.as_bytes());
         URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
     };
@@ -435,15 +439,9 @@ async fn verify_from_source(
         }));
     }
 
-    db::upsert_github_user(
-        pool,
-        q.user_id,
-        &q.login,
-        None,
-        json!({"login": q.login}),
-    )
-    .await
-    .map_err(OAuthError::Db)?;
+    db::upsert_github_user(pool, q.user_id, &q.login, None, json!({"login": q.login}))
+        .await
+        .map_err(OAuthError::Db)?;
     let mut bytes = [0_u8; 32];
     OsRng.fill_bytes(&mut bytes);
     let token_plain = URL_SAFE_NO_PAD.encode(bytes);
