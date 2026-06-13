@@ -350,7 +350,11 @@ fn cors_layer(config: &Config) -> CorsLayer {
             axum::http::Method::PUT,
             axum::http::Method::DELETE,
         ])
-        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::AUTHORIZATION,
+            header::HeaderName::from_static("x-requested-with"),
+        ])
         .allow_credentials(true)
         .max_age(Duration::from_secs(3600))
 }
