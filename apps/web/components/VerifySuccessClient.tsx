@@ -20,6 +20,11 @@ function safeGithubRedirect(value: string | null): string | null {
   }
 }
 
+function storedReturnUrl(sessionId: string): string | null {
+  if (typeof window === "undefined") return null;
+  return window.sessionStorage.getItem(`gho-return-${sessionId}`);
+}
+
 export function VerifySuccessClient({ sessionId }: { sessionId: string }) {
   const initialParams = useMemo(() => {
     if (typeof window === "undefined") {
@@ -33,7 +38,9 @@ export function VerifySuccessClient({ sessionId }: { sessionId: string }) {
     };
   }, []);
 
-  const [redirectUrl, setRedirectUrl] = useState<string | null>(safeGithubRedirect(initialParams.redirectUrl));
+  const [redirectUrl, setRedirectUrl] = useState<string | null>(
+    safeGithubRedirect(initialParams.redirectUrl) ?? safeGithubRedirect(storedReturnUrl(sessionId)),
+  );
   const [login, setLogin] = useState<string | null>(initialParams.login);
   const [secondsRemaining, setSecondsRemaining] = useState(redirectDelaySeconds);
   const [countdownProgress, setCountdownProgress] = useState(100);
@@ -44,7 +51,11 @@ export function VerifySuccessClient({ sessionId }: { sessionId: string }) {
     const query = `?token=${encodeURIComponent(initialParams.token)}`;
     apiFetch<VerifySession>(`/api/verify/${encodeURIComponent(sessionId)}${query}`)
       .then((session) => {
-        setRedirectUrl(safeGithubRedirect(session.redirect_url ?? session.issue_or_pr_url ?? null));
+        const nextRedirect = safeGithubRedirect(session.redirect_url ?? session.issue_or_pr_url ?? null);
+        if (nextRedirect && typeof window !== "undefined") {
+          window.sessionStorage.setItem(`gho-return-${sessionId}`, nextRedirect);
+        }
+        setRedirectUrl(nextRedirect ?? safeGithubRedirect(storedReturnUrl(sessionId)));
         setLogin((current) => current ?? session.oauth_login ?? session.github_login ?? null);
       })
       .catch(() => {

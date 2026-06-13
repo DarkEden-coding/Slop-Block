@@ -6,6 +6,11 @@ import { apiFetch, type VerifySession } from "../lib/api";
 import { CaptchaWidget } from "./CaptchaWidget";
 import { VerifyShell, VerifyStepIndicator } from "./VerifyShell";
 
+function rememberReturnUrl(sessionId: string, redirect: string | undefined) {
+  if (!redirect || typeof window === "undefined") return;
+  window.sessionStorage.setItem(`gho-return-${sessionId}`, redirect);
+}
+
 export function VerifyClient({ sessionId }: { sessionId: string }) {
   const router = useRouter();
   const [session, setSession] = useState<VerifySession | null>(null);
@@ -38,6 +43,7 @@ export function VerifyClient({ sessionId }: { sessionId: string }) {
     setSession(next);
     if (next.status === "completed") {
       const redirect = next.redirect_url ?? next.issue_or_pr_url;
+      rememberReturnUrl(sessionId, redirect);
       const params = new URLSearchParams({ token: sessionToken });
       if (redirect) params.set("redirect", redirect);
       router.replace(`/verify/${sessionId}/success?${params.toString()}`);
@@ -77,6 +83,7 @@ export function VerifyClient({ sessionId }: { sessionId: string }) {
           }),
         });
         const redirect = updated.redirect_url ?? updated.issue_or_pr_url;
+        rememberReturnUrl(sessionId, redirect);
         const params = new URLSearchParams({ token: sessionToken });
         if (redirect) params.set("redirect", redirect);
         if (updated.oauth_login ?? session?.oauth_login) {
