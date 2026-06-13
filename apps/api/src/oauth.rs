@@ -8,6 +8,7 @@ use axum::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use captcha::{CaptchaProvider, PROVIDER_DEV_BYPASS};
 use github::{CheckRunRequest, GitHubApi};
+use hmac::{Hmac, Mac};
 use policy::VerificationPolicy;
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,7 @@ use uuid::Uuid;
 use crate::captcha_config::{self, SessionCaptchaConfig};
 use crate::AppState;
 
+type HmacSha256 = Hmac<Sha256>;
 const OAUTH_COOKIE: &str = "gho_oauth_state";
 
 pub fn routes() -> Router<AppState> {
@@ -89,16 +91,26 @@ pub fn token_hash(token: &str) -> String {
 }
 
 pub fn encode_state_cookie(
+    secret: &str,
     session_id: Uuid,
     token_hash: &str,
     state: &str,
     session_token: &str,
-) -> String {
-    format!("{session_id}:{token_hash}:{state}:{session_token}")
+) -> Option<String> {
+    let payload = format!("{session_id}:{token_hash}:{state}:{session_token}");
+    let sig = sign_cookie(secret, payload.as_bytes())?;
+    Some(format!("{payload}:{sig}"))
 }
 
-pub fn parse_state_cookie(value: &str, expected_state: &str) -> Option<StateCookie> {
-    let mut parts = value.splitn(4, ':');
+pub fn parse_state_cookie(value: &str, expected_state: &str, secret: &str) -> Option<StateCookie> {
+    let (payload, sig) = value.rsplit_once(':')?;
+    if !constant_time_eq(
+        sign_cookie(secret, payload.as_bytes())?.as_bytes(),
+        sig.as_bytes(),
+    ) {
+        return None;
+    }
+    let mut parts = payload.splitn(4, ':');
     let session_id = parts.next()?.parse().ok()?;
     let token_hash = parts.next()?.to_string();
     let state = parts.next()?.to_string();
@@ -112,6 +124,19 @@ pub fn parse_state_cookie(value: &str, expected_state: &str) -> Option<StateCook
         state,
         session_token,
     })
+}
+
+fn sign_cookie(secret: &str, msg: &[u8]) -> Option<String> {
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).ok()?;
+    mac.update(msg);
+    Some(URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 fn session_oauth_verified(metadata: &serde_json::Value) -> bool {
@@ -206,10 +231,17 @@ async fn oauth_start(
         return Err(OAuthError::InvalidSession);
     }
     let st = random_state();
+    let signing_secret = state
+        .config
+        .admin_session_secret
+        .as_deref()
+        .ok_or(OAuthError::NotConfigured)?;
+    let state_cookie = encode_state_cookie(signing_secret, q.session_id, &hash, &st, &q.token)
+        .ok_or(OAuthError::NotConfigured)?;
     let cookie = format!(
         "{}={}; Path=/api/github/oauth; HttpOnly; SameSite=Lax; Max-Age=600{}",
         OAUTH_COOKIE,
-        encode_state_cookie(q.session_id, &hash, &st, &q.token),
+        state_cookie,
         if state.config.cookie_secure {
             "; Secure"
         } else {
@@ -236,14 +268,18 @@ async fn oauth_callback(
 ) -> Result<Response, OAuthError> {
     if q.error.is_some() {
         if let Some(raw_cookie) = find_cookie(&headers, OAUTH_COOKIE) {
-            if let Some(sc) = parse_state_cookie(&raw_cookie, q.state.as_deref().unwrap_or("")) {
-                return Ok(redirect_verify(
-                    &state,
-                    sc.session_id,
-                    &sc.session_token,
-                    "error",
-                    "oauth_denied",
-                ));
+            if let Some(secret) = state.config.admin_session_secret.as_deref() {
+                if let Some(sc) =
+                    parse_state_cookie(&raw_cookie, q.state.as_deref().unwrap_or(""), secret)
+                {
+                    return Ok(redirect_verify(
+                        &state,
+                        sc.session_id,
+                        &sc.session_token,
+                        "error",
+                        "oauth_denied",
+                    ));
+                }
             }
         }
         return Ok(redirect_verify_error(&state, "oauth_denied"));
@@ -256,7 +292,13 @@ async fn oauth_callback(
         return Ok(response);
     }
     let raw_cookie = find_cookie(&headers, OAUTH_COOKIE).ok_or(OAuthError::InvalidState)?;
-    let sc = parse_state_cookie(&raw_cookie, &st).ok_or(OAuthError::InvalidState)?;
+    let signing_secret = state
+        .config
+        .admin_session_secret
+        .as_deref()
+        .ok_or(OAuthError::NotConfigured)?;
+    let sc =
+        parse_state_cookie(&raw_cookie, &st, signing_secret).ok_or(OAuthError::InvalidState)?;
     let pool = state.db.as_ref().ok_or(OAuthError::NotConfigured)?;
     let session = db::get_verification_session(pool, sc.session_id, &sc.token_hash)
         .await?
@@ -322,10 +364,15 @@ async fn oauth_callback(
         user.id as i64,
     )
     .await?;
+    let new_token = random_state();
+    let new_hash = token_hash(&new_token);
+    db::rotate_verification_session_token(pool, sc.session_id, &sc.token_hash, &new_hash)
+        .await?
+        .ok_or(OAuthError::InvalidSession)?;
     Ok(redirect_verify(
         &state,
         sc.session_id,
-        &sc.session_token,
+        &new_token,
         "continue",
         "oauth_verified",
     ))
@@ -436,15 +483,19 @@ async fn finalize(state: &AppState, s: &db::VerificationSession) {
         .get("login")
         .and_then(|v| v.as_str())
         .unwrap_or(&s.subject_id);
+    let subject_id = s
+        .github_user_id
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| login.to_string());
     let _ = db::trust_subject(
         pool,
         s.repository_id,
         "github_user",
-        login,
+        &subject_id,
         s.github_user_id,
         Some("oauth_captcha_verified"),
         None,
-        json!({"session": s.public_id}),
+        json!({"session": s.public_id, "login": login, "source": "oauth_captcha"}),
     )
     .await;
     let Ok(Some(repo)) = db::get_repository(pool, s.repository_id).await else {
@@ -624,11 +675,13 @@ mod tests {
     fn state_cookie_round_trip_and_rejects_bad_state() {
         let id = Uuid::new_v4();
         let hash = token_hash("secret-token");
-        let value = encode_state_cookie(id, &hash, "state-1", "session-token");
-        let parsed = parse_state_cookie(&value, "state-1").unwrap();
+        let value =
+            encode_state_cookie("signing-secret", id, &hash, "state-1", "session-token").unwrap();
+        let parsed = parse_state_cookie(&value, "state-1", "signing-secret").unwrap();
         assert_eq!(parsed.session_id, id);
         assert_eq!(parsed.session_token, "session-token");
-        assert!(parse_state_cookie(&value, "other").is_none());
+        assert!(parse_state_cookie(&value, "other", "signing-secret").is_none());
+        assert!(parse_state_cookie(&value, "state-1", "wrong-secret").is_none());
     }
     #[test]
     fn token_hash_is_stable() {

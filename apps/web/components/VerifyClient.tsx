@@ -45,10 +45,13 @@ export function VerifyClient({ sessionId }: { sessionId: string }) {
   }, [router, sessionId, sessionToken]);
 
   useEffect(() => {
+    if (sessionToken && typeof window !== "undefined") {
+      window.history.replaceState(null, "", window.location.pathname);
+    }
     loadSession()
       .catch((err: Error) => setError(err.message))
       .finally(() => setLoading(false));
-  }, [loadSession]);
+  }, [loadSession, sessionToken]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;

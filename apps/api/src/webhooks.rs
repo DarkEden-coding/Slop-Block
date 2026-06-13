@@ -274,7 +274,13 @@ async fn process_subject_event(
         .ok_or(WebhookError::GitHubNotConfigured)?;
     let jwt = github::create_app_jwt(app_id, private_key)
         .map_err(|_| WebhookError::GitHubNotConfigured)?;
-    let client = ReqwestGitHubClient::new();
+    let client = ReqwestGitHubClient::with_base_url(&state.config.github_api_base);
+    if ev
+        .installation_id
+        .is_some_and(|id| id as i64 != repo.installation_id)
+    {
+        return Err(WebhookError::InstallationMismatch);
+    }
     let installation_id = ev.installation_id.unwrap_or(repo.installation_id as u64);
     let token = client
         .exchange_installation_token(&jwt, installation_id)
@@ -291,21 +297,14 @@ async fn process_subject_event(
     let is_collaborator = perm
         .as_ref()
         .is_some_and(|p| matches!(p.permission.as_str(), "admin" | "maintain" | "write"));
-    let trust =
-        match db::get_trusted_subject(pool, repo.repository_id, "github_user", &ev.user.login)
-            .await
-            .map_err(WebhookError::Db)?
-        {
-            Some(trust) => Some(trust),
-            None => db::get_trusted_subject(
-                pool,
-                repo.repository_id,
-                "github_user",
-                &ev.user.id.to_string(),
-            )
-            .await
-            .map_err(WebhookError::Db)?,
-        };
+    let trust = db::get_trusted_subject(
+        pool,
+        repo.repository_id,
+        "github_user",
+        &ev.user.id.to_string(),
+    )
+    .await
+    .map_err(WebhookError::Db)?;
     let now = OffsetDateTime::now_utc().unix_timestamp();
     let input = policy::DecisionInput {
         target: ev.target,
@@ -320,7 +319,11 @@ async fn process_subject_event(
             .as_ref()
             .map(|t| policy::TrustState {
                 trusted: t.trusted,
-                manually_exempt: true,
+                manually_exempt: t
+                    .metadata
+                    .get("source")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|source| source == "manual_allowlist"),
                 trusted_at: Some(t.trusted_at.unix_timestamp()),
                 expires_at: t.expires_at.map(|x| x.unix_timestamp()),
             })
@@ -363,7 +366,7 @@ async fn process_subject_event(
     .map_err(WebhookError::Db)?;
     let verify_url = format!(
         "{}/verify/{}?token={}",
-        state.config.github_web_url.trim_end_matches('/'),
+        state.config.web_base_url.trim_end_matches('/'),
         session.public_id,
         token_plain
     );
@@ -613,6 +616,8 @@ pub enum WebhookError {
     MissingField(&'static str),
     #[error("GitHub app credentials are not configured")]
     GitHubNotConfigured,
+    #[error("webhook installation does not match stored repository installation")]
+    InstallationMismatch,
     #[error("GitHub API error: {0}")]
     GitHub(#[from] github::GitHubError),
     #[error("database error")]
@@ -630,9 +635,9 @@ impl IntoResponse for WebhookError {
             WebhookError::MissingHeader(_) | WebhookError::InvalidSignature => {
                 (StatusCode::UNAUTHORIZED, "invalid_signature")
             }
-            WebhookError::InvalidJson | WebhookError::MissingField(_) => {
-                (StatusCode::BAD_REQUEST, "bad_request")
-            }
+            WebhookError::InvalidJson
+            | WebhookError::MissingField(_)
+            | WebhookError::InstallationMismatch => (StatusCode::BAD_REQUEST, "bad_request"),
             WebhookError::GitHub(_) | WebhookError::Db(_) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
             }
@@ -682,6 +687,7 @@ mod tests {
             admin_session_cookie_name: "gho_admin_session".into(),
             admin_session_secret: None,
             secrets_encryption_key: None,
+            trust_proxy_headers: false,
         })
     }
 

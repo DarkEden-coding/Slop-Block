@@ -82,6 +82,7 @@ mod tests {
             admin_session_cookie_name: "gho_admin_session".into(),
             admin_session_secret: None,
             secrets_encryption_key: key,
+            trust_proxy_headers: false,
         }
     }
 

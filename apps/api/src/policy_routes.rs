@@ -154,7 +154,7 @@ async fn upsert_repo_policy(
     Path(repo_id): Path<i64>,
     Json(req): Json<UpsertPolicyRequest>,
 ) -> Result<Json<RepositoryPolicyResponse>, PolicyRouteError> {
-    ensure_admin(&state, &headers)?;
+    ensure_admin_mutation(&state, &headers)?;
     let pool = state.db.as_ref().ok_or(PolicyRouteError::NoDb)?;
     let repo = find_repo(pool, repo_id).await?;
 
@@ -180,7 +180,7 @@ async fn add_allowlist_subject(
     Path(repo_id): Path<i64>,
     Json(req): Json<AllowlistRequest>,
 ) -> Result<Json<TrustedUserResponse>, PolicyRouteError> {
-    ensure_admin(&state, &headers)?;
+    ensure_admin_mutation(&state, &headers)?;
     let pool = state.db.as_ref().ok_or(PolicyRouteError::NoDb)?;
     let repo = find_repo(pool, repo_id).await?;
     let user = req.user.trim();
@@ -209,7 +209,7 @@ async fn remove_allowlist_subject(
     headers: HeaderMap,
     Path((repo_id, user_id)): Path<(i64, String)>,
 ) -> Result<StatusCode, PolicyRouteError> {
-    ensure_admin(&state, &headers)?;
+    ensure_admin_mutation(&state, &headers)?;
     let pool = state.db.as_ref().ok_or(PolicyRouteError::NoDb)?;
     let repo = find_repo(pool, repo_id).await?;
     db::revoke_subject(pool, repo.repository_id, "github_user", &user_id)
@@ -220,6 +220,14 @@ async fn remove_allowlist_subject(
 
 fn ensure_admin(state: &AppState, headers: &HeaderMap) -> Result<(), PolicyRouteError> {
     if crate::admin_auth::authorize_admin(state, headers) {
+        Ok(())
+    } else {
+        Err(PolicyRouteError::Unauthorized)
+    }
+}
+
+fn ensure_admin_mutation(state: &AppState, headers: &HeaderMap) -> Result<(), PolicyRouteError> {
+    if crate::admin_auth::authorize_admin_mutation(state, headers) {
         Ok(())
     } else {
         Err(PolicyRouteError::Unauthorized)

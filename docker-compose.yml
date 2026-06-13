@@ -52,8 +52,9 @@ services:
       RECAPTCHA_SECRET: ${RECAPTCHA_SECRET:-}
       RECAPTCHA_SITE_KEY: ${RECAPTCHA_SITE_KEY:-}
       TURNSTILE_DEV_BYPASS: ${TURNSTILE_DEV_BYPASS:-false}
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
     ports:
-      - "${API_PORT:-8080}:8080"
+      - "127.0.0.1:${API_PORT:-8080}:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -79,7 +80,7 @@ services:
       API_BASE_URL: ${API_BASE_URL:-http://api:8080}
       WEB_BASE_URL: ${WEB_BASE_URL:-http://localhost:3000}
     ports:
-      - "${WEB_PORT:-3000}:3000"
+      - "127.0.0.1:${WEB_PORT:-3000}:3000"
     depends_on:
       api:
         condition: service_healthy

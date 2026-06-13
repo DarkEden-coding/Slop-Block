@@ -227,14 +227,25 @@ async fn logout(State(state): State<AppState>) -> Response {
 }
 
 pub fn authorize_admin(state: &AppState, headers: &HeaderMap) -> bool {
+    bearer_authorized(state, headers) || current_admin_user(state, headers).is_some()
+}
+
+pub fn authorize_admin_mutation(state: &AppState, headers: &HeaderMap) -> bool {
+    bearer_authorized(state, headers)
+        || (current_admin_user(state, headers).is_some()
+            && headers
+                .get("x-requested-with")
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value == "github-human-auth"))
+}
+
+fn bearer_authorized(state: &AppState, headers: &HeaderMap) -> bool {
     if let Some(expected) = state.config.admin_api_token.as_deref() {
         if let Some(provided) = bearer_token(headers) {
-            if constant_time_eq(provided.as_bytes(), expected.as_bytes()) {
-                return true;
-            }
+            return constant_time_eq(provided.as_bytes(), expected.as_bytes());
         }
     }
-    current_admin_user(state, headers).is_some()
+    false
 }
 
 pub fn current_admin_user(state: &AppState, headers: &HeaderMap) -> Option<AdminUser> {

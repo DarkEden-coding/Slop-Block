@@ -136,6 +136,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
       credentials: "include",
       headers: {
         "content-type": "application/json",
+        "x-requested-with": "github-human-auth",
         ...(init?.headers ?? {}),
       },
     });

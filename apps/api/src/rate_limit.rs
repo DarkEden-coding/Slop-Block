@@ -54,23 +54,25 @@ impl RateLimiter {
 
 /// Best-effort client identity: Cloudflare/proxy headers first (the production
 /// deployment terminates TLS at a Cloudflare tunnel), then the socket peer address.
-fn client_key(headers: &HeaderMap, request: &Request) -> String {
-    if let Some(ip) = headers
-        .get("cf-connecting-ip")
-        .and_then(|v| v.to_str().ok())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-    {
-        return ip.to_owned();
-    }
-    if let Some(ip) = headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-    {
-        return ip.to_owned();
+fn client_key(headers: &HeaderMap, request: &Request, trust_proxy_headers: bool) -> String {
+    if trust_proxy_headers {
+        if let Some(ip) = headers
+            .get("cf-connecting-ip")
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            return ip.to_owned();
+        }
+        if let Some(ip) = headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(',').next())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            return ip.to_owned();
+        }
     }
     request
         .extensions()
@@ -84,7 +86,11 @@ pub async fn rate_limit_middleware(
     request: Request,
     next: Next,
 ) -> Response {
-    let key = client_key(request.headers(), &request);
+    let key = client_key(
+        request.headers(),
+        &request,
+        state.config.trust_proxy_headers,
+    );
     if state.rate_limiter.allow(&key) {
         next.run(request).await
     } else {

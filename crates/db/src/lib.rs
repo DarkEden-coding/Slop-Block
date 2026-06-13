@@ -331,6 +331,20 @@ pub async fn complete_verification_session(
     sqlx::query_as::<_, VerificationSession>("UPDATE verification_sessions SET status='completed', completed_at=now(), updated_at=now() WHERE public_id=$1 AND token_hash=$2 AND status='pending' RETURNING *").bind(public_id).bind(token_hash).fetch_optional(pool).await
 }
 
+pub async fn rotate_verification_session_token(
+    pool: &PgPool,
+    public_id: Uuid,
+    old_token_hash: &str,
+    new_token_hash: &str,
+) -> Result<Option<VerificationSession>> {
+    sqlx::query_as::<_, VerificationSession>("UPDATE verification_sessions SET token_hash=$3, updated_at=now() WHERE public_id=$1 AND token_hash=$2 AND status='pending' RETURNING *")
+        .bind(public_id)
+        .bind(old_token_hash)
+        .bind(new_token_hash)
+        .fetch_optional(pool)
+        .await
+}
+
 pub async fn mark_verification_session_oauth_verified(
     pool: &PgPool,
     public_id: Uuid,
@@ -343,6 +357,7 @@ pub async fn mark_verification_session_oauth_verified(
         "oauth_login": oauth_login,
         "oauth_user_id": oauth_user_id,
         "oauth_verified_at": OffsetDateTime::now_utc().unix_timestamp(),
+        "trust_source": "oauth_captcha",
     });
     sqlx::query_as::<_, VerificationSession>(
         "UPDATE verification_sessions SET metadata = metadata || $3::jsonb, updated_at=now() WHERE public_id=$1 AND token_hash=$2 AND status='pending' RETURNING *",

@@ -527,6 +527,7 @@ mod tests {
             admin_session_cookie_name: "gho_admin_session".into(),
             admin_session_secret: None,
             secrets_encryption_key: Some(vec![9_u8; 32]),
+            trust_proxy_headers: false,
         }
     }
 

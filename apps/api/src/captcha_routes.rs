@@ -41,7 +41,7 @@ async fn update_settings(
     headers: HeaderMap,
     Json(body): Json<CaptchaSettingsUpdate>,
 ) -> Result<Json<CaptchaSettings>, CaptchaRouteError> {
-    ensure_admin(&state, &headers)?;
+    ensure_admin_mutation(&state, &headers)?;
     let pool = state.db.as_ref().ok_or(CaptchaRouteError::NoDb)?;
     let existing = db::get_app_setting(pool, SETTINGS_KEY)
         .await
@@ -58,6 +58,14 @@ async fn update_settings(
 
 fn ensure_admin(state: &AppState, headers: &HeaderMap) -> Result<(), CaptchaRouteError> {
     if crate::admin_auth::authorize_admin(state, headers) {
+        Ok(())
+    } else {
+        Err(CaptchaRouteError::Unauthorized)
+    }
+}
+
+fn ensure_admin_mutation(state: &AppState, headers: &HeaderMap) -> Result<(), CaptchaRouteError> {
+    if crate::admin_auth::authorize_admin_mutation(state, headers) {
         Ok(())
     } else {
         Err(CaptchaRouteError::Unauthorized)

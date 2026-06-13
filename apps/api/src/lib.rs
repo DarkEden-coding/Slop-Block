@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use std::{env, net::SocketAddr, sync::Arc, time::Duration};
 use thiserror::Error;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tracing::Span;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -51,6 +52,7 @@ pub struct Config {
     pub admin_session_cookie_name: String,
     pub admin_session_secret: Option<String>,
     pub secrets_encryption_key: Option<Vec<u8>>,
+    pub trust_proxy_headers: bool,
 }
 
 impl Config {
@@ -172,6 +174,11 @@ impl Config {
             ));
         }
 
+        let trust_proxy_headers = get("TRUST_PROXY_HEADERS")
+            .map(|value| parse_bool("TRUST_PROXY_HEADERS", &value))
+            .transpose()?
+            .unwrap_or(false);
+
         let secrets_encryption_key = match get("SECRETS_ENCRYPTION_KEY").filter(|v| !v.is_empty()) {
             Some(raw) => {
                 let bytes = base64::engine::general_purpose::STANDARD
@@ -235,6 +242,7 @@ impl Config {
             admin_session_cookie_name,
             admin_session_secret,
             secrets_encryption_key,
+            trust_proxy_headers,
         })
     }
 
@@ -316,7 +324,14 @@ pub fn router(state: AppState) -> Router {
         .merge(captcha_routes::router())
         .merge(webhooks::routes())
         .layer(cors_layer(&state.config))
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &axum::http::Request<_>| {
+                    let path = request.uri().path();
+                    tracing::info_span!("request", method = %request.method(), path = %path)
+                })
+                .on_request(|_request: &axum::http::Request<_>, _span: &Span| {}),
+        )
         .with_state(state)
 }
 

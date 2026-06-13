@@ -8,6 +8,18 @@ const redirectDelaySeconds = 3;
 const countdownCircleRadius = 12;
 const countdownCircleCircumference = 2 * Math.PI * countdownCircleRadius;
 
+function safeGithubRedirect(value: string | null): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.hostname !== "github.com") return null;
+    if (!/^\/[^/]+\/[^/]+\/(issues|pull)\/\d+\/?$/.test(url.pathname)) return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
 export function VerifySuccessClient({ sessionId }: { sessionId: string }) {
   const initialParams = useMemo(() => {
     if (typeof window === "undefined") {
@@ -21,7 +33,7 @@ export function VerifySuccessClient({ sessionId }: { sessionId: string }) {
     };
   }, []);
 
-  const [redirectUrl, setRedirectUrl] = useState<string | null>(initialParams.redirectUrl);
+  const [redirectUrl, setRedirectUrl] = useState<string | null>(safeGithubRedirect(initialParams.redirectUrl));
   const [login, setLogin] = useState<string | null>(initialParams.login);
   const [secondsRemaining, setSecondsRemaining] = useState(redirectDelaySeconds);
   const [countdownProgress, setCountdownProgress] = useState(100);
@@ -32,7 +44,7 @@ export function VerifySuccessClient({ sessionId }: { sessionId: string }) {
     const query = `?token=${encodeURIComponent(initialParams.token)}`;
     apiFetch<VerifySession>(`/api/verify/${encodeURIComponent(sessionId)}${query}`)
       .then((session) => {
-        setRedirectUrl(session.redirect_url ?? session.issue_or_pr_url ?? null);
+        setRedirectUrl(safeGithubRedirect(session.redirect_url ?? session.issue_or_pr_url ?? null));
         setLogin((current) => current ?? session.oauth_login ?? session.github_login ?? null);
       })
       .catch(() => {
