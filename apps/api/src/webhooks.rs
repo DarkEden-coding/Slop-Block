@@ -333,6 +333,25 @@ async fn process_subject_event(
     let decision = policy::decide(&policy, &input);
     db::insert_audit(pool, Some("github_webhook"), "github.webhook.decision", Some(repo.repository_id), Some(ev.subject_type), Some(&ev.number.to_string()), json!({"reason": decision.reason, "required": decision.required, "allowed": decision.allowed})).await.map_err(WebhookError::Db)?;
     if !decision.required {
+        // If the author is already trusted/exempt when an issue or PR is opened/reopened,
+        // still reflect that state on GitHub so maintainers can filter/sort by label.
+        // Previously the verified label was only added to subjects that first entered
+        // the pending flow and were later verified through OAuth/CAPTCHA.
+        for action in &decision.actions {
+            match action {
+                policy::PolicyAction::AddLabel(label) => {
+                    let _ = client
+                        .add_labels(&token, &repo.owner, &repo.name, ev.number, &[label.clone()])
+                        .await;
+                }
+                policy::PolicyAction::RemoveLabel(label) => {
+                    let _ = client
+                        .remove_label(&token, &repo.owner, &repo.name, ev.number, label)
+                        .await;
+                }
+                _ => {}
+            }
+        }
         return Ok(());
     }
 
