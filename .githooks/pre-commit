@@ -1,0 +1,15 @@
+#!/usr/bin/env sh
+set -eu
+
+if [ "${SKIP_HOOKS:-}" = "1" ]; then
+  echo "SKIP_HOOKS=1 set; skipping pre-commit checks."
+  exit 0
+fi
+
+echo "==> pre-commit: Rust formatting"
+cargo fmt --all --check
+
+echo "==> pre-commit: web lint"
+pnpm --filter web lint
+
+echo "pre-commit checks passed."

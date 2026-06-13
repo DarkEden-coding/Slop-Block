@@ -1,0 +1,30 @@
+#!/usr/bin/env sh
+set -eu
+
+if [ "${SKIP_HOOKS:-}" = "1" ]; then
+  echo "SKIP_HOOKS=1 set; skipping pre-push checks."
+  exit 0
+fi
+
+echo "==> pre-push: Rust formatting"
+cargo fmt --all --check
+
+echo "==> pre-push: Rust compilation"
+cargo check --workspace --all-targets
+
+echo "==> pre-push: Rust clippy"
+cargo clippy --workspace --all-targets -- -D warnings
+
+echo "==> pre-push: Rust tests"
+cargo test --workspace
+
+echo "==> pre-push: web lint"
+pnpm --filter web lint
+
+echo "==> pre-push: web build"
+pnpm --filter web build
+
+echo "==> pre-push: Docker Compose config"
+docker compose config >/tmp/github-human-auth-compose.yml
+
+echo "pre-push checks passed."

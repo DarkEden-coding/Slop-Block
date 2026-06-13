@@ -177,13 +177,27 @@ Install JavaScript dependencies:
 pnpm install
 ```
 
-Run checks:
+Install repository git hooks once per clone:
+
+```sh
+./scripts/install-git-hooks.sh
+```
+
+The tracked hooks mirror CI to reduce broken pushes:
+
+- `pre-commit`: `cargo fmt --all --check` and `pnpm --filter web lint`
+- `pre-push`: Rust formatting, compilation, clippy, tests, web lint/build, and `docker compose config`
+
+Run checks manually:
 
 ```sh
 cargo fmt --all --check
+cargo check --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 pnpm --filter web lint
 pnpm --filter web build
+docker compose config >/tmp/github-human-auth-compose.yml
 ```
 
 Run the API locally:
