@@ -1,6 +1,6 @@
-# GitHub Human Auth
+# Slop Block — CAPTCHA Verification for GitHub Issues and Pull Requests
 
-A self-hostable GitHub App that verifies unfamiliar issue and pull request authors proving that they are human before maintainers pour coffee into the triage machine.
+A self-hosted GitHub App that requires unknown issue and pull request authors to verify with GitHub OAuth and CAPTCHA before maintainers prioritize their contributions.
 
 GitHub Human Auth combines GitHub OAuth, CAPTCHA, repository policies, and trusted contributor allowlists so maintainers can spend less time fighting drive-by slop, spammy PRs, and bot-generated issue confetti — and more time reviewing work from real people.
 
