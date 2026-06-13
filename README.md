@@ -1,6 +1,6 @@
 # GitHub Human Auth
 
-A self-hostable GitHub App that politely asks unfamiliar issue and pull request authors to prove they are human before maintainers pour coffee into the triage machine.
+A self-hostable GitHub App that verifies unfamiliar issue and pull request authors proving that they are human before maintainers pour coffee into the triage machine.
 
 GitHub Human Auth combines GitHub OAuth, CAPTCHA, repository policies, and trusted contributor allowlists so maintainers can spend less time fighting drive-by slop, spammy PRs, and bot-generated issue confetti — and more time reviewing work from real people.
 
@@ -14,8 +14,6 @@ This project adds a lightweight verification gate for unknown authors:
 2. The app checks the repository policy and allowlist.
 3. Unknown contributors are routed through GitHub OAuth plus CAPTCHA.
 4. Verified humans can proceed; trusted users can be allowlisted for smoother future contributions.
-
-It is not a replacement for code review, moderation, or common sense. It is a helpful bouncer at the door wearing a tiny “please stop feeding maintainers garbage” hat.
 
 ## Features
 
