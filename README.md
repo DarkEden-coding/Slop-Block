@@ -2,7 +2,16 @@
 
 A self-hosted GitHub App that requires unknown issue and pull request authors to verify with GitHub OAuth and CAPTCHA before maintainers prioritize their contributions.
 
-GitHub Human Auth combines GitHub OAuth, CAPTCHA, repository policies, and trusted contributor allowlists so maintainers can spend less time fighting drive-by slop, spammy PRs, and bot-generated issue confetti — and more time reviewing work from real people.
+Slop Block helps open-source maintainers reduce GitHub issue spam, AI-generated pull request slop, bot-created issues, and drive-by low-quality contributions by labeling unknown contributors until they complete human verification with GitHub OAuth and CAPTCHA.
+
+## What it does
+
+- Adds a `needs-human-verification` label to issues and pull requests from unknown authors.
+- Posts a verification link.
+- Requires GitHub OAuth so the verifier controls the GitHub account that opened the issue or PR.
+- Requires CAPTCHA through Cloudflare Turnstile, hCaptcha, or reCAPTCHA.
+- Adds `human-verified` after successful verification.
+- Lets maintainers allowlist trusted contributors.
 
 ## Why this exists
 
