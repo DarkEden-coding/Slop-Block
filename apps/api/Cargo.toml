@@ -30,6 +30,7 @@ tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
+urlencoding = "2"
 
 [dev-dependencies]
 tower.workspace = true

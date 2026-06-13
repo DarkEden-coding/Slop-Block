@@ -9,12 +9,11 @@ use axum::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use github::{CheckRunRequest, GitHubApi, ReqwestGitHubClient};
 use hmac::{Hmac, Mac};
-use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 use thiserror::Error;
-use time::{Duration, OffsetDateTime};
+use time::OffsetDateTime;
 use tracing::{error, info};
 
 use crate::{AppState, ErrorBody, ErrorDetail};
@@ -365,30 +364,7 @@ async fn process_subject_event(
     .await
     .map_err(WebhookError::Db)?;
 
-    let mut bytes = [0_u8; 32];
-    OsRng.fill_bytes(&mut bytes);
-    let token_plain = URL_SAFE_NO_PAD.encode(bytes);
-    let mut h = Sha256::new();
-    sha2::Digest::update(&mut h, token_plain.as_bytes());
-    let token_hash = hex::encode(sha2::Digest::finalize(h));
-    let session = db::create_verification_session(
-        pool,
-        repo.repository_id,
-        ev.subject_type,
-        &ev.number.to_string(),
-        Some(ev.user.id),
-        &token_hash,
-        OffsetDateTime::now_utc() + Duration::hours(1),
-        json!({"login": ev.user.login, "subject_url": ev.html_url}),
-    )
-    .await
-    .map_err(WebhookError::Db)?;
-    let verify_url = format!(
-        "{}/verify/{}?token={}",
-        state.config.web_base_url.trim_end_matches('/'),
-        session.public_id,
-        token_plain
-    );
+    let verify_url = source_verify_url(state, repo.repository_id, ev.subject_type, ev.number, ev.user.id, &ev.user.login, &ev.html_url)?;
 
     for label in [policy.apply_label.as_ref(), policy.pending_label.as_ref()]
         .into_iter()
@@ -428,7 +404,7 @@ async fn process_subject_event(
                 &ev.number.to_string(),
                 "comment",
                 Some(&c.id.to_string()),
-                json!({"url": c.html_url, "session": session.public_id}),
+                json!({"url": c.html_url, "source_url": verify_url}),
             )
             .await
             .map_err(WebhookError::Db)?;
@@ -448,7 +424,7 @@ async fn process_subject_event(
                     }
                     .into(),
                 ),
-                details_url: Some(verify_url),
+                details_url: Some(verify_url.clone()),
                 output: Some(
                     json!({"title":"Human verification required","summary":"Complete verification to proceed."}),
                 ),
@@ -481,7 +457,7 @@ async fn process_subject_event(
                     &ev.number.to_string(),
                     "check_run",
                     Some(&c.id.to_string()),
-                    json!({"sha": c.head_sha, "session": session.public_id}),
+                    json!({"sha": c.head_sha, "source_url": verify_url}),
                 )
                 .await
                 .map_err(WebhookError::Db)?;
@@ -587,6 +563,35 @@ async fn upsert_repository_from_value(
     .await
     .map_err(WebhookError::Db)?;
     Ok(())
+}
+
+fn source_verify_url(
+    state: &AppState,
+    repository_id: i64,
+    subject_type: &str,
+    number: u64,
+    github_user_id: i64,
+    login: &str,
+    subject_url: &str,
+) -> Result<String, WebhookError> {
+    let secret = state
+        .config
+        .admin_session_secret
+        .as_ref()
+        .or(state.config.github_webhook_secret.as_ref())
+        .ok_or(WebhookError::GitHubNotConfigured)?;
+    let payload = format!("{repository_id}|{subject_type}|{number}|{github_user_id}|{login}|{subject_url}");
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+        .map_err(|_| WebhookError::GitHubNotConfigured)?;
+    mac.update(payload.as_bytes());
+    let sig = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+    Ok(format!(
+        "{}/verify/source?repo={repository_id}&type={}&number={number}&user_id={github_user_id}&login={}&url={}&sig={sig}",
+        state.config.web_base_url.trim_end_matches('/'),
+        urlencoding::encode(subject_type),
+        urlencoding::encode(login),
+        urlencoding::encode(subject_url),
+    ))
 }
 
 fn verify_signature(secret: &str, headers: &HeaderMap, body: &[u8]) -> Result<(), WebhookError> {

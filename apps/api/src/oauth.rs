@@ -27,6 +27,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/github/oauth/start", get(oauth_start))
         .route("/api/github/oauth/callback", get(oauth_callback))
+        .route("/api/verify/from-source", get(verify_from_source))
         .route("/api/verify/:session_id", get(get_verify))
         .route("/api/verify/:session_id/captcha", post(post_captcha))
 }
@@ -50,6 +51,27 @@ struct CaptchaBody {
     session_token: String,
     #[serde(default)]
     provider: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SourceQuery {
+    repo: i64,
+    #[serde(rename = "type")]
+    subject_type: String,
+    number: u64,
+    user_id: i64,
+    login: String,
+    url: String,
+    sig: String,
+}
+
+#[derive(Serialize)]
+struct SourceResponse {
+    session_id: Option<Uuid>,
+    token: Option<String>,
+    already_verified: bool,
+    redirect_url: String,
+    message: String,
 }
 
 #[derive(Serialize)]
@@ -227,7 +249,7 @@ async fn oauth_start(
     let session = db::get_verification_session(pool, q.session_id, &hash)
         .await?
         .ok_or(OAuthError::NotFound)?;
-    if session.status != "pending" || session.expires_at <= OffsetDateTime::now_utc() {
+    if session.status != "pending" {
         return Err(OAuthError::InvalidSession);
     }
     let st = random_state();
@@ -303,7 +325,7 @@ async fn oauth_callback(
     let session = db::get_verification_session(pool, sc.session_id, &sc.token_hash)
         .await?
         .ok_or(OAuthError::NotFound)?;
-    if session.status != "pending" || session.expires_at <= OffsetDateTime::now_utc() {
+    if session.status != "pending" {
         return Err(OAuthError::InvalidSession);
     }
     let client_id = state
@@ -378,6 +400,75 @@ async fn oauth_callback(
     ))
 }
 
+async fn verify_from_source(
+    State(state): State<AppState>,
+    Query(q): Query<SourceQuery>,
+) -> Result<Json<SourceResponse>, OAuthError> {
+    let secret = state
+        .config
+        .admin_session_secret
+        .as_ref()
+        .or(state.config.github_webhook_secret.as_ref())
+        .ok_or(OAuthError::NotConfigured)?
+        .clone();
+    let expected = {
+        let payload = format!("{}|{}|{}|{}|{}|{}", q.repo, q.subject_type, q.number, q.user_id, q.login, q.url);
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).map_err(|_| OAuthError::NotConfigured)?;
+        mac.update(payload.as_bytes());
+        URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+    };
+    if !constant_time_eq(expected.as_bytes(), q.sig.as_bytes()) {
+        return Err(OAuthError::InvalidSession);
+    }
+    let pool = state.db.as_ref().ok_or(OAuthError::NotConfigured)?;
+    if db::get_trusted_subject(pool, q.repo, "github_user", &q.user_id.to_string())
+        .await
+        .map_err(OAuthError::Db)?
+        .is_some()
+    {
+        return Ok(Json(SourceResponse {
+            session_id: None,
+            token: None,
+            already_verified: true,
+            redirect_url: q.url,
+            message: "You have already verified for this repository.".into(),
+        }));
+    }
+
+    db::upsert_github_user(
+        pool,
+        q.user_id,
+        &q.login,
+        None,
+        json!({"login": q.login}),
+    )
+    .await
+    .map_err(OAuthError::Db)?;
+    let mut bytes = [0_u8; 32];
+    OsRng.fill_bytes(&mut bytes);
+    let token_plain = URL_SAFE_NO_PAD.encode(bytes);
+    let hash = token_hash(&token_plain);
+    let session = db::create_verification_session(
+        pool,
+        q.repo,
+        &q.subject_type,
+        &q.number.to_string(),
+        Some(q.user_id),
+        &hash,
+        OffsetDateTime::now_utc() + time::Duration::days(3650),
+        json!({"login": q.login, "subject_url": q.url}),
+    )
+    .await
+    .map_err(OAuthError::Db)?;
+    Ok(Json(SourceResponse {
+        session_id: Some(session.public_id),
+        token: Some(token_plain),
+        already_verified: false,
+        redirect_url: q.url,
+        message: "Verification session created.".into(),
+    }))
+}
+
 async fn get_verify(
     State(state): State<AppState>,
     Path(session_id): Path<Uuid>,
@@ -419,7 +510,7 @@ async fn post_captcha(
     let s = db::get_verification_session(pool, session_id, &hash)
         .await?
         .ok_or(OAuthError::NotFound)?;
-    if s.status != "pending" || s.expires_at <= OffsetDateTime::now_utc() {
+    if s.status != "pending" {
         return Err(OAuthError::InvalidSession);
     }
     if !session_oauth_verified(&s.metadata) {
