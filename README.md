@@ -13,6 +13,11 @@ Slop Block helps open-source maintainers reduce GitHub issue spam, AI-generated 
 - Adds `human-verified` after successful verification.
 - Lets maintainers allowlist trusted contributors.
 
+<img width="958" height="442" alt="image" src="https://github.com/user-attachments/assets/6dc49e69-a268-437c-ac31-8c40717f2669" />
+
+<img width="810" height="556" alt="image" src="https://github.com/user-attachments/assets/4cd216c9-0102-47d2-ae54-2de3b4100217" />
+
+
 ## Why this exists
 
 Open source maintainers are generous, not infinite. When every repo becomes a magnet for low-effort AI sludge, fake reports, and suspicious PRs, real contributors get buried and maintainers lose momentum.
