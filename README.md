@@ -1,8 +1,21 @@
-# Slop Block — CAPTCHA Verification for GitHub Issues and Pull Requests
+# Slop Block — GitHub Human Auth for Issues and Pull Requests
 
 A self-hosted GitHub App that requires unknown issue and pull request authors to verify with GitHub OAuth and CAPTCHA before maintainers prioritize their contributions.
 
-Slop Block helps open-source maintainers reduce GitHub issue spam, AI-generated pull request slop, bot-created issues, and drive-by low-quality contributions by labeling unknown contributors until they complete human verification with GitHub OAuth and CAPTCHA.
+Slop Block helps maintainers reduce GitHub issue spam, pull request spam, bot-created issues, AI-generated PR slop, and low-quality drive-by contributions.
+
+Unknown contributors are labeled until they complete GitHub Human Auth with GitHub OAuth and CAPTCHA.
+
+## Use cases
+
+- CAPTCHA for GitHub issues
+- CAPTCHA for GitHub pull requests
+- GitHub issue spam filtering
+- GitHub PR spam filtering
+- GitHub OAuth human verification
+- Cloudflare Turnstile for GitHub contributors
+- Labeling unverified GitHub contributors
+- Blocking AI-generated issue and pull request slop
 
 ## What it does
 
