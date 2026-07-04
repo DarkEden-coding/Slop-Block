@@ -10,10 +10,19 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{AppState, ErrorBody, ErrorDetail};
+use github::GitHubApi;
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/installations", get(list_installations))
+        .route(
+            "/api/installations/:installation_id/claim",
+            post(claim_installation),
+        )
+        .route(
+            "/api/installations/:installation_id/sync",
+            post(sync_installation),
+        )
         .route("/api/repos", get(list_repositories))
         .route("/api/repos/:repo_id", get(get_repo_policy))
         .route(
@@ -34,6 +43,7 @@ pub struct InstallationResponse {
     pub account_login: String,
     pub account_id: Option<i64>,
     pub account_type: Option<String>,
+    pub install_url: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -90,34 +100,118 @@ async fn list_installations(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<InstallationResponse>>, PolicyRouteError> {
-    ensure_admin(&state, &headers)?;
     let pool = state.db.as_ref().ok_or(PolicyRouteError::NoDb)?;
-    let installations = sqlx::query_as::<_, db::GithubInstallation>(
-        "SELECT * FROM github_installations ORDER BY account_login",
-    )
-    .fetch_all(pool)
-    .await?
-    .into_iter()
-    .map(InstallationResponse::from)
-    .collect();
-    Ok(Json(installations))
+    let installations = if crate::admin_auth::bearer_is_authorized(&state, &headers) {
+        sqlx::query_as::<_, db::GithubInstallation>(
+            "SELECT * FROM github_installations WHERE deleted_at IS NULL ORDER BY account_login",
+        )
+        .fetch_all(pool)
+        .await?
+    } else {
+        let user = crate::admin_auth::current_admin_user(&state, &headers)
+            .ok_or(PolicyRouteError::Unauthorized)?;
+        sqlx::query_as::<_, db::GithubInstallation>(
+            "SELECT i.* FROM github_installations i JOIN installation_admins a ON a.installation_id=i.installation_id WHERE a.github_user_id=$1 AND i.deleted_at IS NULL ORDER BY i.account_login",
+        )
+        .bind(user.id as i64)
+        .fetch_all(pool)
+        .await?
+    };
+    Ok(Json(
+        installations
+            .into_iter()
+            .map(InstallationResponse::from)
+            .collect(),
+    ))
 }
 
 async fn list_repositories(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<RepositorySummary>>, PolicyRouteError> {
-    ensure_admin(&state, &headers)?;
     let pool = state.db.as_ref().ok_or(PolicyRouteError::NoDb)?;
-    let repositories = sqlx::query_as::<_, db::GithubRepository>(
-        "SELECT * FROM github_repositories ORDER BY full_name",
+    let repositories = if crate::admin_auth::bearer_is_authorized(&state, &headers) {
+        sqlx::query_as::<_, db::GithubRepository>(
+            "SELECT * FROM github_repositories WHERE active=true ORDER BY full_name",
+        )
+        .fetch_all(pool)
+        .await?
+    } else {
+        let user = crate::admin_auth::current_admin_user(&state, &headers)
+            .ok_or(PolicyRouteError::Unauthorized)?;
+        sqlx::query_as::<_, db::GithubRepository>(
+            "SELECT r.* FROM github_repositories r JOIN installation_admins a ON a.installation_id=r.installation_id WHERE a.github_user_id=$1 AND r.active=true ORDER BY r.full_name",
+        )
+        .bind(user.id as i64)
+        .fetch_all(pool)
+        .await?
+    };
+    Ok(Json(
+        repositories
+            .into_iter()
+            .map(RepositorySummary::from)
+            .collect(),
+    ))
+}
+
+async fn claim_installation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(installation_id): Path<i64>,
+) -> Result<Json<InstallationResponse>, PolicyRouteError> {
+    ensure_mutation_allowed(&state, &headers)?;
+    let user = crate::admin_auth::current_admin_user(&state, &headers)
+        .ok_or(PolicyRouteError::Unauthorized)?;
+    let pool = state.db.as_ref().ok_or(PolicyRouteError::NoDb)?;
+    verify_user_installation_access(&state, pool, user.id as i64, &user.login, installation_id)
+        .await?;
+    let installation = sqlx::query_as::<_, db::GithubInstallation>(
+        "SELECT * FROM github_installations WHERE installation_id=$1 AND deleted_at IS NULL",
     )
-    .fetch_all(pool)
+    .bind(installation_id)
+    .fetch_optional(pool)
     .await?
-    .into_iter()
-    .map(RepositorySummary::from)
-    .collect();
-    Ok(Json(repositories))
+    .ok_or(PolicyRouteError::NotFound)?;
+    Ok(Json(InstallationResponse::from(installation)))
+}
+
+async fn sync_installation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(installation_id): Path<i64>,
+) -> Result<Json<Vec<RepositorySummary>>, PolicyRouteError> {
+    ensure_mutation_allowed(&state, &headers)?;
+    ensure_installation_access(&state, &headers, installation_id).await?;
+    let pool = state.db.as_ref().ok_or(PolicyRouteError::NoDb)?;
+    let token = installation_token(&state, installation_id as u64).await?;
+    let client = github::ReqwestGitHubClient::with_base_url(&state.config.github_api_base);
+    let repos = client
+        .installation_repositories(&token)
+        .await
+        .map_err(PolicyRouteError::GitHub)?;
+    for repo in repos {
+        let owner = repo.owner.login;
+        let name = repo.name;
+        db::upsert_repository(
+            pool,
+            repo.id as i64,
+            installation_id,
+            &owner,
+            &name,
+            &repo.full_name,
+            repo.private,
+            repo.default_branch.as_deref(),
+            serde_json::json!({}),
+        )
+        .await?;
+    }
+    let repositories = db::list_repositories(pool, installation_id).await?;
+    Ok(Json(
+        repositories
+            .into_iter()
+            .map(RepositorySummary::from)
+            .collect(),
+    ))
 }
 
 async fn get_repo_policy(
@@ -125,9 +219,8 @@ async fn get_repo_policy(
     headers: HeaderMap,
     Path(repo_id): Path<i64>,
 ) -> Result<Json<RepositoryPolicyResponse>, PolicyRouteError> {
-    ensure_admin(&state, &headers)?;
     let pool = state.db.as_ref().ok_or(PolicyRouteError::NoDb)?;
-    let repo = find_repo(pool, repo_id).await?;
+    let repo = find_repo_for_headers(&state, &headers, pool, repo_id).await?;
 
     let stored = db::get_policy(pool, repo.repository_id).await?;
     let (enabled, policy) = match stored {
@@ -135,7 +228,7 @@ async fn get_repo_policy(
             stored.enabled,
             serde_json::from_value(stored.policy).map_err(|_| PolicyRouteError::InvalidPolicy)?,
         ),
-        None => (true, VerificationPolicy::default()),
+        None => (false, VerificationPolicy::default()),
     };
 
     let trusted_users = list_trusted_users(pool, repo.repository_id).await?;
@@ -154,9 +247,9 @@ async fn upsert_repo_policy(
     Path(repo_id): Path<i64>,
     Json(req): Json<UpsertPolicyRequest>,
 ) -> Result<Json<RepositoryPolicyResponse>, PolicyRouteError> {
-    ensure_admin_mutation(&state, &headers)?;
+    ensure_mutation_allowed(&state, &headers)?;
     let pool = state.db.as_ref().ok_or(PolicyRouteError::NoDb)?;
-    let repo = find_repo(pool, repo_id).await?;
+    let repo = find_repo_for_headers(&state, &headers, pool, repo_id).await?;
 
     let policy_value =
         serde_json::to_value(&req.policy).map_err(|_| PolicyRouteError::InvalidPolicy)?;
@@ -180,9 +273,9 @@ async fn add_allowlist_subject(
     Path(repo_id): Path<i64>,
     Json(req): Json<AllowlistRequest>,
 ) -> Result<Json<TrustedUserResponse>, PolicyRouteError> {
-    ensure_admin_mutation(&state, &headers)?;
+    ensure_mutation_allowed(&state, &headers)?;
     let pool = state.db.as_ref().ok_or(PolicyRouteError::NoDb)?;
-    let repo = find_repo(pool, repo_id).await?;
+    let repo = find_repo_for_headers(&state, &headers, pool, repo_id).await?;
     let user = req.user.trim();
     if user.is_empty() {
         return Err(PolicyRouteError::InvalidAllowlistUser);
@@ -209,29 +302,126 @@ async fn remove_allowlist_subject(
     headers: HeaderMap,
     Path((repo_id, user_id)): Path<(i64, String)>,
 ) -> Result<StatusCode, PolicyRouteError> {
-    ensure_admin_mutation(&state, &headers)?;
+    ensure_mutation_allowed(&state, &headers)?;
     let pool = state.db.as_ref().ok_or(PolicyRouteError::NoDb)?;
-    let repo = find_repo(pool, repo_id).await?;
+    let repo = find_repo_for_headers(&state, &headers, pool, repo_id).await?;
     db::revoke_subject(pool, repo.repository_id, "github_user", &user_id)
         .await?
         .ok_or(PolicyRouteError::NotFound)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn ensure_admin(state: &AppState, headers: &HeaderMap) -> Result<(), PolicyRouteError> {
-    if crate::admin_auth::authorize_admin(state, headers) {
+fn ensure_mutation_allowed(state: &AppState, headers: &HeaderMap) -> Result<(), PolicyRouteError> {
+    if crate::admin_auth::bearer_is_authorized(state, headers)
+        || (crate::admin_auth::current_admin_user(state, headers).is_some()
+            && crate::admin_auth::mutation_header_present(headers))
+    {
         Ok(())
     } else {
         Err(PolicyRouteError::Unauthorized)
     }
 }
 
-fn ensure_admin_mutation(state: &AppState, headers: &HeaderMap) -> Result<(), PolicyRouteError> {
-    if crate::admin_auth::authorize_admin_mutation(state, headers) {
+async fn ensure_installation_access(
+    state: &AppState,
+    headers: &HeaderMap,
+    installation_id: i64,
+) -> Result<(), PolicyRouteError> {
+    if crate::admin_auth::bearer_is_authorized(state, headers) {
+        return Ok(());
+    }
+    let pool = state.db.as_ref().ok_or(PolicyRouteError::NoDb)?;
+    let user = crate::admin_auth::current_admin_user(state, headers)
+        .ok_or(PolicyRouteError::Unauthorized)?;
+    if db::user_can_manage_installation(pool, installation_id, user.id as i64).await? {
         Ok(())
     } else {
         Err(PolicyRouteError::Unauthorized)
     }
+}
+
+async fn find_repo_for_headers(
+    state: &AppState,
+    headers: &HeaderMap,
+    pool: &db::PgPool,
+    repo_id: i64,
+) -> Result<db::GithubRepository, PolicyRouteError> {
+    let repo = find_repo(pool, repo_id).await?;
+    if crate::admin_auth::bearer_is_authorized(state, headers) {
+        return Ok(repo);
+    }
+    let user = crate::admin_auth::current_admin_user(state, headers)
+        .ok_or(PolicyRouteError::Unauthorized)?;
+    if db::user_can_manage_repo(pool, repo.repository_id, user.id as i64).await? {
+        Ok(repo)
+    } else {
+        Err(PolicyRouteError::Unauthorized)
+    }
+}
+
+async fn installation_token(
+    state: &AppState,
+    installation_id: u64,
+) -> Result<String, PolicyRouteError> {
+    let app_id = state
+        .config
+        .github_app_id
+        .as_ref()
+        .ok_or(PolicyRouteError::GitHubNotConfigured)?;
+    let pk = state
+        .config
+        .github_private_key
+        .as_ref()
+        .ok_or(PolicyRouteError::GitHubNotConfigured)?;
+    let jwt =
+        github::create_app_jwt(app_id, pk).map_err(|_| PolicyRouteError::GitHubNotConfigured)?;
+    let gh = github::ReqwestGitHubClient::with_base_url(&state.config.github_api_base);
+    Ok(gh
+        .exchange_installation_token(&jwt, installation_id)
+        .await
+        .map_err(PolicyRouteError::GitHub)?
+        .token)
+}
+
+async fn verify_user_installation_access(
+    state: &AppState,
+    pool: &db::PgPool,
+    github_user_id: i64,
+    login: &str,
+    installation_id: i64,
+) -> Result<(), PolicyRouteError> {
+    let stored = db::get_dashboard_oauth_token(pool, github_user_id)
+        .await?
+        .ok_or(PolicyRouteError::ReauthRequired)?;
+    let token = crate::secret_box::decrypt_field(&state.config, &stored.access_token_encrypted)
+        .ok_or(PolicyRouteError::ReauthRequired)?;
+    let gh = github::ReqwestGitHubClient::with_base_url(&state.config.github_api_base);
+    let installations = gh
+        .user_installations(&token)
+        .await
+        .map_err(PolicyRouteError::GitHub)?;
+    for installation in installations {
+        let account = installation.account;
+        let account_login = account
+            .as_ref()
+            .map(|a| a.login.as_str())
+            .unwrap_or("unknown");
+        let account_id = account.as_ref().map(|a| a.id as i64);
+        db::upsert_installation(
+            pool,
+            installation.id as i64,
+            account_login,
+            account_id,
+            None,
+            serde_json::json!({"source":"verified_claim"}),
+        )
+        .await?;
+        db::upsert_installation_admin(pool, installation.id as i64, github_user_id, login).await?;
+        if installation.id as i64 == installation_id {
+            return Ok(());
+        }
+    }
+    Err(PolicyRouteError::Unauthorized)
 }
 
 async fn find_repo(
@@ -241,7 +431,7 @@ async fn find_repo(
     // Prefer the GitHub repository id over the internal serial id so a collision
     // between the two can never resolve to the wrong repository.
     sqlx::query_as::<_, db::GithubRepository>(
-        "SELECT * FROM github_repositories WHERE repository_id=$1 OR id=$1 ORDER BY (repository_id=$1) DESC LIMIT 1",
+        "SELECT * FROM github_repositories WHERE (repository_id=$1 OR id=$1) AND active=true ORDER BY (repository_id=$1) DESC LIMIT 1",
     )
     .bind(repo_id)
     .fetch_optional(pool)
@@ -269,6 +459,7 @@ impl From<db::GithubInstallation> for InstallationResponse {
             account_login: installation.account_login,
             account_id: installation.account_id,
             account_type: installation.account_type,
+            install_url: None,
         }
     }
 }
@@ -318,6 +509,12 @@ pub enum PolicyRouteError {
     InvalidPolicy,
     #[error("allowlist user must be a GitHub login or numeric user id")]
     InvalidAllowlistUser,
+    #[error("reauthentication required to verify GitHub installation access")]
+    ReauthRequired,
+    #[error("GitHub app credentials are not configured")]
+    GitHubNotConfigured,
+    #[error("GitHub API error")]
+    GitHub(#[from] github::GitHubError),
     #[error("database error")]
     Db(#[from] sqlx::Error),
 }
@@ -332,6 +529,11 @@ impl IntoResponse for PolicyRouteError {
             PolicyRouteError::InvalidAllowlistUser => {
                 (StatusCode::BAD_REQUEST, "invalid_allowlist_user")
             }
+            PolicyRouteError::ReauthRequired => (StatusCode::UNAUTHORIZED, "reauth_required"),
+            PolicyRouteError::GitHubNotConfigured => {
+                (StatusCode::SERVICE_UNAVAILABLE, "github_not_configured")
+            }
+            PolicyRouteError::GitHub(_) => (StatusCode::BAD_GATEWAY, "github_error"),
             PolicyRouteError::Db(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
         };
         (

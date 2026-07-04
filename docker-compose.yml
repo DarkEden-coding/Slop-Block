@@ -53,6 +53,8 @@ services:
       RECAPTCHA_SITE_KEY: ${RECAPTCHA_SITE_KEY:-}
       TURNSTILE_DEV_BYPASS: ${TURNSTILE_DEV_BYPASS:-false}
       TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
+      HOSTED_MODE: ${HOSTED_MODE:-false}
+      GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:-}
     ports:
       - "127.0.0.1:${API_PORT:-8080}:8080"
     depends_on:
@@ -72,6 +74,7 @@ services:
       dockerfile: docker/Dockerfile.web
       args:
         NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8080}
+        NEXT_PUBLIC_GITHUB_APP_SLUG: ${NEXT_PUBLIC_GITHUB_APP_SLUG:-}
     environment:
       NODE_ENV: production
       PORT: 3000
@@ -79,6 +82,7 @@ services:
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8080}
       API_BASE_URL: ${API_BASE_URL:-http://api:8080}
       WEB_BASE_URL: ${WEB_BASE_URL:-http://localhost:3000}
+      NEXT_PUBLIC_GITHUB_APP_SLUG: ${NEXT_PUBLIC_GITHUB_APP_SLUG:-}
     ports:
       - "127.0.0.1:${WEB_PORT:-3000}:3000"
     depends_on:

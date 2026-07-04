@@ -17,6 +17,12 @@ export default function Home() {
         </p>
 
         <div className="mt-10 flex flex-wrap items-center gap-4">
+          <Link
+            href="/install"
+            className="inline-flex h-11 items-center rounded-xl bg-cyan-300 px-5 text-sm font-black leading-none text-slate-950 shadow-2xl shadow-cyan-950/40 transition hover:-translate-y-0.5 hover:bg-cyan-200"
+          >
+            Install GitHub App
+          </Link>
           <AuthPanel />
           <Link
             href="/dashboard"

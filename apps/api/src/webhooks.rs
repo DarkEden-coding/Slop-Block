@@ -107,14 +107,38 @@ async fn process_event(
     match event_type {
         "installation" => {
             upsert_installation_from_payload(pool, payload).await?;
+            let installation_id = payload.pointer("/installation/id").and_then(Value::as_i64);
+            match payload.get("action").and_then(Value::as_str) {
+                Some("deleted") => {
+                    if let Some(id) = installation_id {
+                        db::mark_installation_deleted(pool, id)
+                            .await
+                            .map_err(WebhookError::Db)?;
+                    }
+                }
+                Some("suspend") => {
+                    if let Some(id) = installation_id {
+                        db::mark_installation_suspended(pool, id, true)
+                            .await
+                            .map_err(WebhookError::Db)?;
+                    }
+                }
+                Some("unsuspend") => {
+                    if let Some(id) = installation_id {
+                        db::mark_installation_suspended(pool, id, false)
+                            .await
+                            .map_err(WebhookError::Db)?;
+                    }
+                }
+                _ => {}
+            }
             if let Some(repos) = payload.get("repositories").and_then(Value::as_array) {
-                let installation_id = payload.pointer("/installation/id").and_then(Value::as_i64);
                 for repo in repos {
                     upsert_repository_from_value(pool, repo, installation_id).await?;
                 }
             }
         }
-        "repositories" => {
+        "repositories" | "installation_repositories" => {
             upsert_installation_from_payload(pool, payload).await?;
             let installation_id = payload.pointer("/installation/id").and_then(Value::as_i64);
             for key in ["repositories", "repositories_added"] {
@@ -258,7 +282,7 @@ async fn process_subject_event(
     {
         Some(p) if p.enabled => serde_json::from_value(p.policy).unwrap_or_default(),
         Some(_) => return Ok(()),
-        None => policy::VerificationPolicy::default(),
+        None => return Ok(()),
     };
 
     let app_id = state
@@ -721,6 +745,8 @@ mod tests {
             admin_session_secret: None,
             secrets_encryption_key: None,
             trust_proxy_headers: false,
+            hosted_mode: false,
+            github_app_slug: None,
         })
     }
 

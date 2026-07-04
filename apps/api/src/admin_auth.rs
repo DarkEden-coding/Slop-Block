@@ -177,8 +177,12 @@ async fn process_admin_oauth_callback(
         .current_user(&tok.access_token)
         .await
         .map_err(|_| AdminAuthError::Upstream)?;
-    if !is_allowed_login(state, &user.login) {
+    if !state.config.hosted_mode && !is_allowed_login(state, &user.login) {
         return Ok(redirect_home(state, "auth=unauthorized"));
+    }
+    if state.config.hosted_mode {
+        persist_hosted_oauth_access(state, &gh, &tok.access_token, user.id as i64, &user.login)
+            .await?;
     }
     let admin = AdminUser {
         id: user.id,
@@ -212,6 +216,47 @@ async fn process_admin_oauth_callback(
     res.headers_mut()
         .append(header::SET_COOKIE, clear_state.parse().unwrap());
     Ok(res)
+}
+
+async fn persist_hosted_oauth_access(
+    state: &AppState,
+    gh: &github::ReqwestGitHubClient,
+    access_token: &str,
+    github_user_id: i64,
+    login: &str,
+) -> Result<(), AdminAuthError> {
+    let pool = state.db.as_ref().ok_or(AdminAuthError::NotConfigured)?;
+    let encrypted = crate::secret_box::encrypt_field(&state.config, access_token)
+        .map_err(|_| AdminAuthError::NotConfigured)?;
+    db::upsert_dashboard_oauth_token(pool, github_user_id, login, &encrypted)
+        .await
+        .map_err(|_| AdminAuthError::Upstream)?;
+    let installations = gh
+        .user_installations(access_token)
+        .await
+        .map_err(|_| AdminAuthError::Upstream)?;
+    for installation in installations {
+        let account = installation.account;
+        let account_login = account
+            .as_ref()
+            .map(|a| a.login.as_str())
+            .unwrap_or("unknown");
+        let account_id = account.as_ref().map(|a| a.id as i64);
+        db::upsert_installation(
+            pool,
+            installation.id as i64,
+            account_login,
+            account_id,
+            None,
+            serde_json::json!({"source":"user_installations"}),
+        )
+        .await
+        .map_err(|_| AdminAuthError::Upstream)?;
+        db::upsert_installation_admin(pool, installation.id as i64, github_user_id, login)
+            .await
+            .map_err(|_| AdminAuthError::Upstream)?;
+    }
+    Ok(())
 }
 
 async fn logout(State(state): State<AppState>) -> Response {
@@ -251,7 +296,18 @@ fn bearer_authorized(state: &AppState, headers: &HeaderMap) -> bool {
 pub fn current_admin_user(state: &AppState, headers: &HeaderMap) -> Option<AdminUser> {
     let raw = find_cookie(headers, &state.config.admin_session_cookie_name)?;
     let user = decode_session(state, &raw)?;
-    is_allowed_login(state, &user.login).then_some(user)
+    (state.config.hosted_mode || is_allowed_login(state, &user.login)).then_some(user)
+}
+
+pub fn bearer_is_authorized(state: &AppState, headers: &HeaderMap) -> bool {
+    bearer_authorized(state, headers)
+}
+
+pub fn mutation_header_present(headers: &HeaderMap) -> bool {
+    headers
+        .get("x-requested-with")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value == "github-human-auth")
 }
 
 fn encode_session(state: &AppState, user: &AdminUser) -> Option<String> {

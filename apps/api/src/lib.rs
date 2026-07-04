@@ -53,6 +53,8 @@ pub struct Config {
     pub admin_session_secret: Option<String>,
     pub secrets_encryption_key: Option<Vec<u8>>,
     pub trust_proxy_headers: bool,
+    pub hosted_mode: bool,
+    pub github_app_slug: Option<String>,
 }
 
 impl Config {
@@ -178,6 +180,11 @@ impl Config {
             .map(|value| parse_bool("TRUST_PROXY_HEADERS", &value))
             .transpose()?
             .unwrap_or(false);
+        let hosted_mode = get("HOSTED_MODE")
+            .map(|value| parse_bool("HOSTED_MODE", &value))
+            .transpose()?
+            .unwrap_or(false);
+        let github_app_slug = get("GITHUB_APP_SLUG").filter(|value| !value.is_empty());
 
         let secrets_encryption_key = match get("SECRETS_ENCRYPTION_KEY").filter(|v| !v.is_empty()) {
             Some(raw) => {
@@ -196,6 +203,12 @@ impl Config {
             None => None,
         };
 
+        if hosted_mode && secrets_encryption_key.is_none() {
+            return Err(ConfigError::Invalid(
+                "SECRETS_ENCRYPTION_KEY is required when HOSTED_MODE=true to encrypt OAuth tokens",
+            ));
+        }
+
         // Fail closed: when GitHub OAuth is configured (the production posture), require an
         // explicit admin session signing secret and an explicit admin allowlist so a missing
         // value can never degrade into an open dashboard.
@@ -207,9 +220,9 @@ impl Config {
                     "ADMIN_SESSION_SECRET is required when GITHUB_OAUTH_CLIENT_ID/SECRET are set",
                 ));
             }
-            if admin_github_logins.is_empty() {
+            if !hosted_mode && admin_github_logins.is_empty() {
                 return Err(ConfigError::Invalid(
-                    "ADMIN_GITHUB_LOGINS must list at least one login when GitHub OAuth is set",
+                    "ADMIN_GITHUB_LOGINS must list at least one login when GitHub OAuth is set unless HOSTED_MODE=true",
                 ));
             }
         }
@@ -243,6 +256,8 @@ impl Config {
             admin_session_secret,
             secrets_encryption_key,
             trust_proxy_headers,
+            hosted_mode,
+            github_app_slug,
         })
     }
 

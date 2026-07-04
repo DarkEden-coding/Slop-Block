@@ -83,6 +83,8 @@ mod tests {
             admin_session_secret: None,
             secrets_encryption_key: key,
             trust_proxy_headers: false,
+            hosted_mode: false,
+            github_app_slug: None,
         }
     }
 

@@ -65,6 +65,7 @@ pub struct Repository {
     pub full_name: String,
     pub private: bool,
     pub owner: User,
+    pub default_branch: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Installation {
@@ -227,6 +228,11 @@ pub trait GitHubApi: Send + Sync {
         redirect_uri: Option<&str>,
     ) -> Result<OAuthToken, GitHubError>;
     async fn current_user(&self, access_token: &str) -> Result<User, GitHubError>;
+    async fn user_installations(
+        &self,
+        access_token: &str,
+    ) -> Result<Vec<Installation>, GitHubError>;
+    async fn installation_repositories(&self, token: &str) -> Result<Vec<Repository>, GitHubError>;
     async fn add_labels(
         &self,
         token: &str,
@@ -391,6 +397,53 @@ impl GitHubApi for ReqwestGitHubClient {
     async fn current_user(&self, access_token: &str) -> Result<User, GitHubError> {
         self.send_json(self.authed(reqwest::Method::GET, "/user", access_token))
             .await
+    }
+    async fn user_installations(
+        &self,
+        access_token: &str,
+    ) -> Result<Vec<Installation>, GitHubError> {
+        #[derive(Deserialize)]
+        struct Resp {
+            installations: Vec<Installation>,
+        }
+        let mut out = Vec::new();
+        for page in 1..=20 {
+            let resp: Resp = self
+                .send_json(self.authed(
+                    reqwest::Method::GET,
+                    &format!("/user/installations?per_page=100&page={page}"),
+                    access_token,
+                ))
+                .await?;
+            let done = resp.installations.len() < 100;
+            out.extend(resp.installations);
+            if done {
+                break;
+            }
+        }
+        Ok(out)
+    }
+    async fn installation_repositories(&self, token: &str) -> Result<Vec<Repository>, GitHubError> {
+        #[derive(Deserialize)]
+        struct Resp {
+            repositories: Vec<Repository>,
+        }
+        let mut out = Vec::new();
+        for page in 1..=20 {
+            let resp: Resp = self
+                .send_json(self.authed(
+                    reqwest::Method::GET,
+                    &format!("/installation/repositories?per_page=100&page={page}"),
+                    token,
+                ))
+                .await?;
+            let done = resp.repositories.len() < 100;
+            out.extend(resp.repositories);
+            if done {
+                break;
+            }
+        }
+        Ok(out)
     }
     async fn add_labels(
         &self,
