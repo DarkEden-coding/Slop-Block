@@ -1,10 +1,25 @@
 #!/usr/bin/env sh
 set -eu
 
+# Git GUI clients and some non-interactive shells run hooks with a minimal PATH.
+# Include the usual Rust, Homebrew, and Node package-manager locations.
+export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+require_command() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "error: required command '$1' was not found in PATH: $PATH" >&2
+    exit 127
+  fi
+}
+
 if [ "${SKIP_HOOKS:-}" = "1" ]; then
   echo "SKIP_HOOKS=1 set; skipping pre-push checks."
   exit 0
 fi
+
+require_command cargo
+require_command pnpm
+require_command docker
 
 echo "==> pre-push: Rust formatting"
 cargo fmt --all --check
