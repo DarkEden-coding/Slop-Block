@@ -233,6 +233,18 @@ pub trait GitHubApi: Send + Sync {
         access_token: &str,
     ) -> Result<Vec<Installation>, GitHubError>;
     async fn installation_repositories(&self, token: &str) -> Result<Vec<Repository>, GitHubError>;
+    async fn list_open_issues(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+    ) -> Result<Vec<Issue>, GitHubError>;
+    async fn list_open_pull_requests(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+    ) -> Result<Vec<PullRequest>, GitHubError>;
     async fn add_labels(
         &self,
         token: &str,
@@ -346,7 +358,7 @@ impl ReqwestGitHubClient {
         let r = rb.send().await.map_err(GitHubError::Http)?;
         let s = r.status();
         if !s.is_success() {
-            return Err(GitHubError::ApiStatus(s));
+            return Err(classify_api_error(r).await);
         }
         r.json().await.map_err(GitHubError::Http)
     }
@@ -407,7 +419,7 @@ impl GitHubApi for ReqwestGitHubClient {
             installations: Vec<Installation>,
         }
         let mut out = Vec::new();
-        for page in 1..=20 {
+        for page in 1.. {
             let resp: Resp = self
                 .send_json(self.authed(
                     reqwest::Method::GET,
@@ -429,7 +441,7 @@ impl GitHubApi for ReqwestGitHubClient {
             repositories: Vec<Repository>,
         }
         let mut out = Vec::new();
-        for page in 1..=20 {
+        for page in 1.. {
             let resp: Resp = self
                 .send_json(self.authed(
                     reqwest::Method::GET,
@@ -439,6 +451,60 @@ impl GitHubApi for ReqwestGitHubClient {
                 .await?;
             let done = resp.repositories.len() < 100;
             out.extend(resp.repositories);
+            if done {
+                break;
+            }
+        }
+        Ok(out)
+    }
+    async fn list_open_issues(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+    ) -> Result<Vec<Issue>, GitHubError> {
+        let mut out = Vec::new();
+        for page in 1.. {
+            let resp: Vec<Issue> = self
+                .send_json(self.authed(
+                    reqwest::Method::GET,
+                    &Self::repo_path(
+                        owner,
+                        repo,
+                        &format!("/issues?state=open&per_page=100&page={page}"),
+                    ),
+                    token,
+                ))
+                .await?;
+            let done = resp.len() < 100;
+            out.extend(resp);
+            if done {
+                break;
+            }
+        }
+        Ok(out)
+    }
+    async fn list_open_pull_requests(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+    ) -> Result<Vec<PullRequest>, GitHubError> {
+        let mut out = Vec::new();
+        for page in 1.. {
+            let resp: Vec<PullRequest> = self
+                .send_json(self.authed(
+                    reqwest::Method::GET,
+                    &Self::repo_path(
+                        owner,
+                        repo,
+                        &format!("/pulls?state=open&per_page=100&page={page}"),
+                    ),
+                    token,
+                ))
+                .await?;
+            let done = resp.len() < 100;
+            out.extend(resp);
             if done {
                 break;
             }
@@ -603,6 +669,45 @@ impl GitHubApi for ReqwestGitHubClient {
     }
 }
 
+async fn classify_api_error(response: reqwest::Response) -> GitHubError {
+    let status = response.status();
+    let headers = response.headers().clone();
+    let retry_after_seconds = headers
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok());
+    let remaining = headers
+        .get("x-ratelimit-remaining")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<i64>().ok());
+    let reset_at = headers
+        .get("x-ratelimit-reset")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<i64>().ok())
+        .and_then(|ts| OffsetDateTime::from_unix_timestamp(ts).ok());
+    let message = response.text().await.ok();
+    let lower = message.as_deref().unwrap_or_default().to_ascii_lowercase();
+    if lower.contains("secondary rate limit")
+        || lower.contains("abuse detection")
+        || status == StatusCode::TOO_MANY_REQUESTS
+    {
+        return GitHubError::SecondaryRateLimited {
+            retry_after_seconds,
+            message,
+        };
+    }
+    if remaining == Some(0) || retry_after_seconds.is_some() {
+        return GitHubError::RateLimited {
+            status,
+            reset_at,
+            retry_after_seconds,
+            remaining,
+            message,
+        };
+    }
+    GitHubError::ApiStatus(status)
+}
+
 fn oauth_token_url(api_base: &str) -> String {
     if api_base.trim_end_matches('/') == "https://api.github.com" {
         "https://github.com/login/oauth/access_token".into()
@@ -639,6 +744,19 @@ pub enum GitHubError {
     Http(#[from] reqwest::Error),
     #[error("GitHub API returned status {0}")]
     ApiStatus(StatusCode),
+    #[error("GitHub rate limited until {reset_at:?}: {message:?}")]
+    RateLimited {
+        status: StatusCode,
+        reset_at: Option<OffsetDateTime>,
+        retry_after_seconds: Option<u64>,
+        remaining: Option<i64>,
+        message: Option<String>,
+    },
+    #[error("GitHub secondary rate limited: {message:?}")]
+    SecondaryRateLimited {
+        retry_after_seconds: Option<u64>,
+        message: Option<String>,
+    },
 }
 
 #[cfg(test)]

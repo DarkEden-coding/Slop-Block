@@ -14,8 +14,9 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("running database migrations");
     db::migrate(&pool).await?;
 
-    let job_runner = api::job_runner::spawn_job_runner(pool.clone());
-    let app = router(AppState::new(config, pool));
+    let state = AppState::new(config, pool.clone());
+    let job_runners = api::job_runner::spawn_job_runner(state.clone(), pool.clone());
+    let app = router(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     tracing::info!(%addr, "starting API server");
@@ -25,7 +26,9 @@ async fn main() -> anyhow::Result<()> {
     )
     .with_graceful_shutdown(shutdown_signal())
     .await?;
-    job_runner.abort();
+    for job_runner in job_runners {
+        job_runner.abort();
+    }
 
     Ok(())
 }

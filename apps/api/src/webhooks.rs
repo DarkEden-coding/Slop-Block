@@ -6,14 +6,11 @@ use axum::{
     routing::post,
     Json, Router,
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use github::{CheckRunRequest, GitHubApi, ReqwestGitHubClient};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::Sha256;
 use thiserror::Error;
-use time::OffsetDateTime;
 use tracing::{error, info};
 
 use crate::{AppState, ErrorBody, ErrorDetail};
@@ -226,7 +223,6 @@ struct PrLikeEvent {
 }
 
 struct SubjectEvent {
-    target: policy::TargetKind,
     subject_type: &'static str,
     number: u64,
     html_url: String,
@@ -238,7 +234,6 @@ struct SubjectEvent {
 impl IssueLikeEvent {
     fn into_subject(self) -> SubjectEvent {
         SubjectEvent {
-            target: policy::TargetKind::Issue,
             subject_type: "issue",
             number: self.issue.number,
             html_url: self.issue.html_url,
@@ -252,7 +247,6 @@ impl IssueLikeEvent {
 impl PrLikeEvent {
     fn into_subject(self) -> SubjectEvent {
         SubjectEvent {
-            target: policy::TargetKind::PullRequest,
             subject_type: "pull_request",
             number: self.pull_request.number,
             html_url: self.pull_request.html_url,
@@ -265,7 +259,7 @@ impl PrLikeEvent {
 }
 
 async fn process_subject_event(
-    state: &AppState,
+    _state: &AppState,
     pool: &db::PgPool,
     ev: SubjectEvent,
 ) -> Result<(), WebhookError> {
@@ -276,226 +270,53 @@ async fn process_subject_event(
         Some(r) => r,
         None => return Ok(()),
     };
-    let policy: policy::VerificationPolicy = match db::get_policy(pool, repo.repository_id)
-        .await
-        .map_err(WebhookError::Db)?
-    {
-        Some(p) if p.enabled => serde_json::from_value(p.policy).unwrap_or_default(),
-        Some(_) => return Ok(()),
-        None => return Ok(()),
-    };
-
-    let app_id = state
-        .config
-        .github_app_id
-        .as_deref()
-        .ok_or(WebhookError::GitHubNotConfigured)?;
-    let private_key = state
-        .config
-        .github_private_key
-        .as_deref()
-        .ok_or(WebhookError::GitHubNotConfigured)?;
-    let jwt = github::create_app_jwt(app_id, private_key)
-        .map_err(|_| WebhookError::GitHubNotConfigured)?;
-    let client = ReqwestGitHubClient::with_base_url(&state.config.github_api_base);
     if ev
         .installation_id
         .is_some_and(|id| id as i64 != repo.installation_id)
     {
         return Err(WebhookError::InstallationMismatch);
     }
-    let installation_id = ev.installation_id.unwrap_or(repo.installation_id as u64);
-    let token = client
-        .exchange_installation_token(&jwt, installation_id)
-        .await
-        .map_err(WebhookError::GitHub)?
-        .token;
-
-    let is_bot = matches!(ev.user.kind.as_deref(), Some("Bot"));
-    let is_app = matches!(ev.user.kind.as_deref(), Some("App"));
-    let perm = client
-        .collaborator_permission(&token, &repo.owner, &repo.name, &ev.user.login)
-        .await
-        .ok();
-    let is_collaborator = perm
-        .as_ref()
-        .is_some_and(|p| matches!(p.permission.as_str(), "admin" | "maintain" | "write"));
-    let trust = db::get_trusted_subject(
-        pool,
-        repo.repository_id,
-        "github_user",
-        &ev.user.id.to_string(),
-    )
-    .await
-    .map_err(WebhookError::Db)?;
-    let now = OffsetDateTime::now_utc().unix_timestamp();
-    let input = policy::DecisionInput {
-        target: ev.target,
-        subject: policy::Subject {
-            login: ev.user.login.clone(),
-            github_user_id: Some(ev.user.id),
-            is_collaborator,
-            is_bot,
-            is_app,
-        },
-        trust: trust
-            .as_ref()
-            .map(|t| policy::TrustState {
-                trusted: t.trusted,
-                manually_exempt: t
-                    .metadata
-                    .get("source")
-                    .and_then(|v| v.as_str())
-                    .is_some_and(|source| source == "manual_allowlist"),
-                trusted_at: Some(t.trusted_at.unix_timestamp()),
-                expires_at: t.expires_at.map(|x| x.unix_timestamp()),
-            })
-            .unwrap_or_default(),
-        now,
-    };
-    let decision = policy::decide(&policy, &input);
-    db::insert_audit(pool, Some("github_webhook"), "github.webhook.decision", Some(repo.repository_id), Some(ev.subject_type), Some(&ev.number.to_string()), json!({"reason": decision.reason, "required": decision.required, "allowed": decision.allowed})).await.map_err(WebhookError::Db)?;
-    if !decision.required {
-        // If the author is already trusted/exempt when an issue or PR is opened/reopened,
-        // still reflect that state on GitHub so maintainers can filter/sort by label.
-        // Previously the verified label was only added to subjects that first entered
-        // the pending flow and were later verified through OAuth/CAPTCHA.
-        for action in &decision.actions {
-            match action {
-                policy::PolicyAction::AddLabel(label) => {
-                    let _ = client
-                        .add_labels(&token, &repo.owner, &repo.name, ev.number, &[label.clone()])
-                        .await;
-                }
-                policy::PolicyAction::RemoveLabel(label) => {
-                    let _ = client
-                        .remove_label(&token, &repo.owner, &repo.name, ev.number, label)
-                        .await;
-                }
-                _ => {}
-            }
-        }
-        return Ok(());
-    }
-
-    db::upsert_github_user(
-        pool,
-        ev.user.id,
-        &ev.user.login,
-        None,
-        json!({"login": ev.user.login, "type": ev.user.kind}),
-    )
-    .await
-    .map_err(WebhookError::Db)?;
-
-    let verify_url = source_verify_url(
-        state,
-        repo.repository_id,
-        ev.subject_type,
-        ev.number,
-        ev.user.id,
-        &ev.user.login,
-        &ev.html_url,
-    )?;
-
-    for label in [policy.apply_label.as_ref(), policy.pending_label.as_ref()]
-        .into_iter()
-        .flatten()
-    {
-        let _ = client
-            .add_labels(&token, &repo.owner, &repo.name, ev.number, &[label.clone()])
-            .await;
-    }
-    if policy.comment_on_required {
-        let body = format!("Human verification is required. Verify here: {verify_url}");
-        let artifact = db::get_bot_artifact(
-            pool,
-            repo.repository_id,
-            ev.subject_type,
-            &ev.number.to_string(),
-            "comment",
+    let payload = serde_json::to_value(crate::github_subjects::SubjectWork {
+        repository_id: repo.repository_id,
+        installation_id: ev.installation_id.or(Some(repo.installation_id as u64)),
+        subject_type: ev.subject_type.to_string(),
+        number: ev.number,
+        html_url: ev.html_url,
+        head_sha: ev.head_sha,
+        github_user_id: ev.user.id,
+        login: ev.user.login,
+        user_type: ev.user.kind,
+        source: "github_webhook".into(),
+        notify_author: false,
+        force_new_comment: false,
+    })
+    .map_err(|_| WebhookError::InvalidJson)?;
+    let dedupe = if ev.subject_type == "pull_request" {
+        let sha = payload
+            .get("head_sha")
+            .and_then(Value::as_str)
+            .unwrap_or("none");
+        format!(
+            "subject:webhook:repo:{}:pr:{}:{}",
+            repo.repository_id, ev.number, sha
         )
-        .await
-        .map_err(WebhookError::Db)?;
-        let comment = if let Some(a) =
-            artifact.and_then(|a| a.external_id.and_then(|id| id.parse::<u64>().ok()))
-        {
-            client
-                .update_issue_comment(&token, &repo.owner, &repo.name, a, &body)
-                .await
-        } else {
-            client
-                .create_issue_comment(&token, &repo.owner, &repo.name, ev.number, &body)
-                .await
-        };
-        if let Ok(c) = comment {
-            db::upsert_bot_artifact(
-                pool,
-                repo.repository_id,
-                ev.subject_type,
-                &ev.number.to_string(),
-                "comment",
-                Some(&c.id.to_string()),
-                json!({"url": c.html_url, "source_url": verify_url}),
-            )
-            .await
-            .map_err(WebhookError::Db)?;
-        }
-    }
-    if ev.target == policy::TargetKind::PullRequest && policy.check_mode != policy::CheckMode::Off {
-        if let Some(sha) = ev.head_sha {
-            let req = CheckRunRequest {
-                name: "Human Auth".into(),
-                head_sha: sha,
-                status: Some("completed".into()),
-                conclusion: Some(
-                    if policy.check_mode == policy::CheckMode::Audit {
-                        "neutral"
-                    } else {
-                        "action_required"
-                    }
-                    .into(),
-                ),
-                details_url: Some(verify_url.clone()),
-                output: Some(
-                    json!({"title":"Human verification required","summary":"Complete verification to proceed."}),
-                ),
-            };
-            let artifact = db::get_bot_artifact(
-                pool,
-                repo.repository_id,
-                ev.subject_type,
-                &ev.number.to_string(),
-                "check_run",
-            )
-            .await
-            .map_err(WebhookError::Db)?;
-            let check = if let Some(a) =
-                artifact.and_then(|a| a.external_id.and_then(|id| id.parse::<u64>().ok()))
-            {
-                client
-                    .update_check_run(&token, &repo.owner, &repo.name, a, &req)
-                    .await
-            } else {
-                client
-                    .create_check_run(&token, &repo.owner, &repo.name, &req)
-                    .await
-            };
-            if let Ok(c) = check {
-                db::upsert_bot_artifact(
-                    pool,
-                    repo.repository_id,
-                    ev.subject_type,
-                    &ev.number.to_string(),
-                    "check_run",
-                    Some(&c.id.to_string()),
-                    json!({"sha": c.head_sha, "source_url": verify_url}),
-                )
-                .await
-                .map_err(WebhookError::Db)?;
-            }
-        }
-    }
+    } else {
+        format!(
+            "subject:webhook:repo:{}:issue:{}",
+            repo.repository_id, ev.number
+        )
+    };
+    jobs::enqueue_deduped(
+        pool,
+        jobs::JobKind::GitHubSubjectEvent,
+        payload,
+        None,
+        8,
+        Some(&dedupe),
+        10,
+    )
+    .await
+    .map_err(WebhookError::Db)?;
     Ok(())
 }
 
@@ -595,36 +416,6 @@ async fn upsert_repository_from_value(
     .await
     .map_err(WebhookError::Db)?;
     Ok(())
-}
-
-fn source_verify_url(
-    state: &AppState,
-    repository_id: i64,
-    subject_type: &str,
-    number: u64,
-    github_user_id: i64,
-    login: &str,
-    subject_url: &str,
-) -> Result<String, WebhookError> {
-    let secret = state
-        .config
-        .admin_session_secret
-        .as_ref()
-        .or(state.config.github_webhook_secret.as_ref())
-        .ok_or(WebhookError::GitHubNotConfigured)?;
-    let payload =
-        format!("{repository_id}|{subject_type}|{number}|{github_user_id}|{login}|{subject_url}");
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-        .map_err(|_| WebhookError::GitHubNotConfigured)?;
-    mac.update(payload.as_bytes());
-    let sig = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
-    Ok(format!(
-        "{}/verify/source?repo={repository_id}&type={}&number={number}&user_id={github_user_id}&login={}&url={}&sig={sig}",
-        state.config.web_base_url.trim_end_matches('/'),
-        urlencoding::encode(subject_type),
-        urlencoding::encode(login),
-        urlencoding::encode(subject_url),
-    ))
 }
 
 fn verify_signature(secret: &str, headers: &HeaderMap, body: &[u8]) -> Result<(), WebhookError> {

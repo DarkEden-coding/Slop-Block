@@ -19,6 +19,9 @@ pub enum JobStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JobKind {
+    GitHubSubjectEvent,
+    BackfillScan,
+    BackfillSubject,
     GitHubArtifactUpdate,
     AutoClose,
 }
@@ -26,6 +29,9 @@ pub enum JobKind {
 impl JobKind {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::GitHubSubjectEvent => "github_subject_event",
+            Self::BackfillScan => "backfill_scan",
+            Self::BackfillSubject => "backfill_subject",
             Self::GitHubArtifactUpdate => "github_artifact_update",
             Self::AutoClose => "auto_close",
         }
@@ -75,8 +81,29 @@ pub async fn enqueue(
     db::enqueue_job(pool, kind.as_str(), payload, run_at, max_attempts).await
 }
 
-pub async fn claim(pool: &PgPool, worker: &str) -> Result<Option<Job>> {
-    db::claim_job(pool, worker).await
+pub async fn enqueue_deduped(
+    pool: &PgPool,
+    kind: JobKind,
+    payload: Value,
+    run_at: Option<OffsetDateTime>,
+    max_attempts: i32,
+    dedupe_key: Option<&str>,
+    priority: i32,
+) -> Result<Job> {
+    db::enqueue_job_deduped(
+        pool,
+        kind.as_str(),
+        payload,
+        run_at,
+        max_attempts,
+        dedupe_key,
+        priority,
+    )
+    .await
+}
+
+pub async fn claim(pool: &PgPool, worker: &str, stale_after_seconds: i64) -> Result<Option<Job>> {
+    db::claim_job(pool, worker, stale_after_seconds).await
 }
 
 pub async fn complete(pool: &PgPool, id: i64) -> Result<Option<Job>> {
@@ -113,7 +140,7 @@ pub async fn runner_loop<F, Fut, C>(
     loop {
         tokio::select! {
             _ = &mut shutdown => break,
-            claimed = claim(&pool, &worker) => {
+            claimed = claim(&pool, &worker, 300) => {
                 match claimed {
                     Ok(Some(job)) => {
                         let id = job.id;

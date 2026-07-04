@@ -96,6 +96,29 @@ export type RepoPolicyResponse = {
   trusted_users?: TrustedUser[];
 };
 
+export type BackfillRun = {
+  id: number;
+  status: "queued" | "scanning" | "running" | "completed" | "failed" | "cancelled" | string;
+  current_phase?: string | null;
+  total_discovered: number;
+  total_enqueued: number;
+  total_processed: number;
+  total_succeeded: number;
+  total_failed: number;
+  total_skipped: number;
+  last_error?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+};
+
+export type BackfillRequest = {
+  include_issues: boolean;
+  include_pull_requests: boolean;
+  notify_authors: boolean;
+  force_new_comments: boolean;
+};
+
 export type AuthMe = {
   authenticated: boolean;
   user: {

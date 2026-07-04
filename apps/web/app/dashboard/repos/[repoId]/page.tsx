@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { AllowlistEditor } from "../../../../components/AllowlistEditor";
+import { BackfillPanel } from "../../../../components/BackfillPanel";
 import { AuthGate } from "../../../../components/AuthPanel";
 import { RepoPolicyEditor } from "../../../../components/RepoPolicyEditor";
 
@@ -16,6 +17,7 @@ export default async function RepoPage({ params }: { params: Promise<{ repoId: s
         <AuthGate>
           <div className="space-y-6">
             <RepoPolicyEditor repoId={repoId} />
+            <BackfillPanel repoId={repoId} />
             <AllowlistEditor repoId={repoId} />
           </div>
         </AuthGate>

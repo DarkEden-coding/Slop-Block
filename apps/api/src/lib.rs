@@ -1,6 +1,7 @@
 pub mod admin_auth;
 pub mod captcha_config;
 pub mod captcha_routes;
+pub mod github_subjects;
 pub mod job_runner;
 pub mod oauth;
 pub mod policy_routes;
