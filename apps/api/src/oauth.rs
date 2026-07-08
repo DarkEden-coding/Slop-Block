@@ -14,7 +14,9 @@ use uuid::Uuid;
 use crate::captcha_config::{self, SessionCaptchaConfig};
 use crate::error::api_json_error;
 use crate::oauth_state::{encode_state_cookie, parse_state_cookie, token_hash};
-use crate::verification_finalize::{finalize, load_repo_policy};
+use crate::verification_finalize::{
+    load_repo_policy, propagate_verified_github_state, record_verification_trust,
+};
 use crate::web_util::{constant_time_eq, find_cookie, random_state, sign_source_payload};
 use crate::AppState;
 const OAUTH_COOKIE: &str = "gho_oauth_state";
@@ -469,7 +471,12 @@ async fn post_captcha(
     let done = db::complete_verification_session(pool, session_id, &hash)
         .await?
         .ok_or(OAuthError::InvalidSession)?;
-    finalize(&state, &done).await;
+    record_verification_trust(&state, &done).await;
+    let bg_state = state.clone();
+    let bg_session = done.clone();
+    tokio::spawn(async move {
+        propagate_verified_github_state(&bg_state, &bg_session).await;
+    });
     let repo = db::get_repository(pool, done.repository_id)
         .await?
         .map(|repo| repo.full_name);

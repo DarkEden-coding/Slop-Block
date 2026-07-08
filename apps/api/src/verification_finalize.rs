@@ -17,7 +17,7 @@ pub async fn load_repo_policy(pool: &db::PgPool, repository_id: i64) -> Verifica
     }
 }
 
-pub async fn finalize(state: &AppState, s: &db::VerificationSession) {
+pub async fn record_verification_trust(state: &AppState, s: &db::VerificationSession) {
     let Some(pool) = state.db.as_ref() else {
         return;
     };
@@ -41,6 +41,12 @@ pub async fn finalize(state: &AppState, s: &db::VerificationSession) {
         json!({"session": s.public_id, "login": login, "source": "oauth_captcha"}),
     )
     .await;
+}
+
+pub async fn propagate_verified_github_state(state: &AppState, s: &db::VerificationSession) {
+    let Some(pool) = state.db.as_ref() else {
+        return;
+    };
     let Ok(Some(repo)) = db::get_repository(pool, s.repository_id).await else {
         return;
     };
@@ -129,6 +135,11 @@ pub async fn finalize(state: &AppState, s: &db::VerificationSession) {
             }
         }
     }
+}
+
+pub async fn finalize(state: &AppState, s: &db::VerificationSession) {
+    record_verification_trust(state, s).await;
+    propagate_verified_github_state(state, s).await;
 }
 
 #[allow(clippy::too_many_arguments)]
