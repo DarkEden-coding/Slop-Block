@@ -112,6 +112,54 @@ export type BackfillRequest = {
   force_new_comments: boolean;
 };
 
+export type QueueJob = {
+  id: number;
+  kind: string;
+  status: string;
+  priority: number;
+  attempts: number;
+  max_attempts: number;
+  run_at: string;
+  locked_by?: string | null;
+  last_error?: string | null;
+  subject_type?: string | null;
+  subject_number?: number | null;
+  source?: string | null;
+  backfill_run_id?: number | null;
+  available_after_rate_limit: boolean;
+  rate_limit_reset_at?: string | null;
+};
+
+export type RateLimitPause = {
+  bucket: string;
+  paused_until: string;
+  remaining?: number | null;
+  reset_at?: string | null;
+  last_error?: string | null;
+};
+
+export type PropagationRun = {
+  id: number;
+  github_user_id?: number | null;
+  login?: string | null;
+  status: string;
+  total_subjects: number;
+  processed_subjects: number;
+  current_subject_type?: string | null;
+  current_subject_id?: string | null;
+  last_error?: string | null;
+  started_at: string;
+  completed_at?: string | null;
+};
+
+export type RepoQueueStatus = {
+  jobs: QueueJob[];
+  backfill: BackfillRun | null;
+  rate_limits: RateLimitPause[];
+  propagations: PropagationRun[];
+  has_active_work: boolean;
+};
+
 export type AuthMe = {
   authenticated: boolean;
   user: {

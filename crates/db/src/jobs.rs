@@ -67,3 +67,28 @@ pub async fn fail_job(
 ) -> Result<Option<Job>> {
     sqlx::query_as::<_, Job>("UPDATE jobs SET status=CASE WHEN attempts >= max_attempts THEN 'failed' ELSE 'queued' END, last_error=$2, run_at=COALESCE($3, now()), locked_by=NULL, locked_at=NULL, rate_limit_reset_at=$3, available_after_rate_limit=$3 IS NOT NULL, updated_at=now() WHERE id=$1 RETURNING *").bind(id).bind(error).bind(retry_at).fetch_optional(pool).await
 }
+
+pub async fn list_active_jobs_for_repo(pool: &PgPool, repository_id: i64) -> Result<Vec<Job>> {
+    sqlx::query_as::<_, Job>(
+        "SELECT j.*
+         FROM jobs j
+         WHERE j.status IN ('queued', 'running')
+           AND (
+             (j.payload->>'repository_id')::bigint = $1
+             OR (
+               j.kind IN ('backfill_scan', 'backfill_subject')
+               AND EXISTS (
+                 SELECT 1
+                 FROM backfill_runs br
+                 WHERE br.id = (j.payload->>'backfill_run_id')::bigint
+                   AND br.repository_id = $1
+               )
+             )
+           )
+         ORDER BY j.priority, j.run_at, j.id
+         LIMIT 200",
+    )
+    .bind(repository_id)
+    .fetch_all(pool)
+    .await
+}

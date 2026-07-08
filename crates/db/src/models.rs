@@ -184,6 +184,25 @@ pub struct BackfillRun {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct PropagationRun {
+    pub id: i64,
+    pub repository_id: i64,
+    pub github_user_id: Option<i64>,
+    pub login: Option<String>,
+    pub session_public_id: Option<Uuid>,
+    pub status: String,
+    pub total_subjects: i32,
+    pub processed_subjects: i32,
+    pub current_subject_type: Option<String>,
+    pub current_subject_id: Option<String>,
+    pub last_error: Option<String>,
+    pub started_at: OffsetDateTime,
+    pub completed_at: Option<OffsetDateTime>,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct BackfillItem {
     pub id: i64,
     pub backfill_run_id: i64,

@@ -55,6 +55,20 @@ pub async fn propagate_verified_github_state(state: &AppState, s: &db::Verificat
         Ok(Some(_)) => return,
         _ => VerificationPolicy::default(),
     };
+    let login = s
+        .metadata
+        .get("login")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&s.subject_id);
+    let propagation_run = db::create_propagation_run(
+        pool,
+        s.repository_id,
+        s.github_user_id,
+        Some(login),
+        s.public_id,
+    )
+    .await
+    .ok();
     let token = installation_token(state, repo.installation_id as u64)
         .await
         .ok();
@@ -69,6 +83,7 @@ pub async fn propagate_verified_github_state(state: &AppState, s: &db::Verificat
             }
         }
         let mut handled = HashSet::new();
+        let mut planned_total = sessions.len() as i32;
         for session in sessions {
             let issue_number = session.subject_id.parse().unwrap_or(0);
             let subject_type = session.subject_type.as_str();
@@ -85,10 +100,23 @@ pub async fn propagate_verified_github_state(state: &AppState, s: &db::Verificat
             )
             .await;
             handled.insert((subject_type.to_string(), issue_number));
+            if let Some(run) = propagation_run.as_ref() {
+                let _ = db::advance_propagation_progress(
+                    pool,
+                    run.id,
+                    subject_type,
+                    &issue_number.to_string(),
+                )
+                .await;
+            }
             tokio::time::sleep(std::time::Duration::from_secs(
                 github_content_delay_seconds(),
             ))
             .await;
+        }
+
+        if let Some(run) = propagation_run.as_ref() {
+            let _ = db::set_propagation_total(pool, run.id, planned_total).await;
         }
 
         if let Some(user_id) = s.github_user_id {
@@ -96,6 +124,22 @@ pub async fn propagate_verified_github_state(state: &AppState, s: &db::Verificat
                 .list_open_issues(&token, &repo.owner, &repo.name)
                 .await
             {
+                let additional = open_items
+                    .iter()
+                    .filter(|issue| issue.user.id as i64 == user_id)
+                    .filter(|issue| {
+                        let subject_type = if issue.pull_request.is_some() {
+                            "pull_request"
+                        } else {
+                            "issue"
+                        };
+                        !handled.contains(&(subject_type.to_string(), issue.number))
+                    })
+                    .count() as i32;
+                planned_total += additional;
+                if let Some(run) = propagation_run.as_ref() {
+                    let _ = db::set_propagation_total(pool, run.id, planned_total).await;
+                }
                 for issue in open_items {
                     if issue.user.id as i64 != user_id {
                         continue;
@@ -127,6 +171,15 @@ pub async fn propagate_verified_github_state(state: &AppState, s: &db::Verificat
                     )
                     .await;
                     handled.insert((subject_type.to_string(), issue.number));
+                    if let Some(run) = propagation_run.as_ref() {
+                        let _ = db::advance_propagation_progress(
+                            pool,
+                            run.id,
+                            subject_type,
+                            &issue.number.to_string(),
+                        )
+                        .await;
+                    }
                     tokio::time::sleep(std::time::Duration::from_secs(
                         github_content_delay_seconds(),
                     ))
@@ -134,6 +187,11 @@ pub async fn propagate_verified_github_state(state: &AppState, s: &db::Verificat
                 }
             }
         }
+        if let Some(run) = propagation_run.as_ref() {
+            let _ = db::complete_propagation_run(pool, run.id).await;
+        }
+    } else if let Some(run) = propagation_run.as_ref() {
+        let _ = db::fail_propagation_run(pool, run.id, "installation token unavailable").await;
     }
 }
 

@@ -5,6 +5,7 @@ mod installations;
 mod jobs;
 mod models;
 mod policy;
+mod propagation;
 mod rate_limits;
 mod sessions;
 
@@ -15,5 +16,6 @@ pub use installations::*;
 pub use jobs::*;
 pub use models::*;
 pub use policy::*;
+pub use propagation::*;
 pub use rate_limits::*;
 pub use sessions::*;

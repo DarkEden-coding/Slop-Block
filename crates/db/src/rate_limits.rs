@@ -25,3 +25,29 @@ pub async fn github_pause_until(pool: &PgPool, bucket: &str) -> Result<Option<Of
     .await?;
     Ok(row.and_then(|(x,)| x))
 }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, sqlx::FromRow)]
+pub struct GithubRateLimitPause {
+    pub bucket: String,
+    pub remaining: Option<i32>,
+    pub reset_at: Option<OffsetDateTime>,
+    pub paused_until: OffsetDateTime,
+    pub last_status: Option<i32>,
+    pub last_error: Option<String>,
+}
+
+pub async fn list_active_rate_limit_pauses_for_installation(
+    pool: &PgPool,
+    installation_id: i64,
+) -> Result<Vec<GithubRateLimitPause>> {
+    let pattern = format!("installation:{installation_id}:%");
+    sqlx::query_as::<_, GithubRateLimitPause>(
+        "SELECT bucket, remaining, reset_at, paused_until, last_status, last_error
+         FROM github_rate_limits
+         WHERE bucket LIKE $1 AND paused_until > now()
+         ORDER BY paused_until DESC",
+    )
+    .bind(pattern)
+    .fetch_all(pool)
+    .await
+}

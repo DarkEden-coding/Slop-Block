@@ -1,6 +1,7 @@
 mod backfills;
 mod guards;
 mod installations;
+mod queue;
 mod repos;
 
 use axum::{
@@ -52,6 +53,7 @@ pub fn router() -> Router<AppState> {
             "/api/repos/:repo_id/backfills/:backfill_id/cancel",
             post(backfills::cancel_backfill),
         )
+        .route("/api/repos/:repo_id/queue", get(queue::repo_queue))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
