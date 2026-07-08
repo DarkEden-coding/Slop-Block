@@ -25,6 +25,23 @@ pub struct ErrorDetail {
     pub message: String,
 }
 
+pub fn api_json_error(
+    status: StatusCode,
+    code: impl Into<String>,
+    message: impl std::fmt::Display,
+) -> Response {
+    (
+        status,
+        Json(ErrorBody {
+            error: ErrorDetail {
+                code: code.into(),
+                message: message.to_string(),
+            },
+        }),
+    )
+        .into_response()
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, code) = match self {
@@ -33,12 +50,6 @@ impl IntoResponse for ApiError {
             }
             ApiError::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
         };
-        let body = Json(ErrorBody {
-            error: ErrorDetail {
-                code: code.to_string(),
-                message: self.to_string(),
-            },
-        });
-        (status, body).into_response()
+        api_json_error(status, code, self)
     }
 }

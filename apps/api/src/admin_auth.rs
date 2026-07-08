@@ -8,11 +8,13 @@ use axum::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use github::GitHubApi;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use time::OffsetDateTime;
 
+use crate::error::api_json_error;
+use crate::github_helpers::sync_user_installations;
 use crate::web_util::{constant_time_eq, find_cookie, random_state, sign_hmac_url_safe};
 use crate::AppState;
+
 const ADMIN_OAUTH_STATE_COOKIE: &str = "gho_admin_oauth_state";
 // Sessions are stateless HMAC cookies with no server-side revocation, so keep the
 // window short; re-authentication is a single GitHub OAuth redirect.
@@ -210,27 +212,15 @@ async fn persist_hosted_oauth_access(
         .user_installations(access_token)
         .await
         .map_err(|_| AdminAuthError::Upstream)?;
-    for installation in installations {
-        let account = installation.account;
-        let account_login = account
-            .as_ref()
-            .map(|a| a.login.as_str())
-            .unwrap_or("unknown");
-        let account_id = account.as_ref().map(|a| a.id as i64);
-        db::upsert_installation(
-            pool,
-            installation.id as i64,
-            account_login,
-            account_id,
-            None,
-            serde_json::json!({"source":"user_installations"}),
-        )
-        .await
-        .map_err(|_| AdminAuthError::Upstream)?;
-        db::upsert_installation_admin(pool, installation.id as i64, github_user_id, login)
-            .await
-            .map_err(|_| AdminAuthError::Upstream)?;
-    }
+    sync_user_installations(
+        pool,
+        &installations,
+        github_user_id,
+        login,
+        "user_installations",
+    )
+    .await
+    .map_err(|_| AdminAuthError::Upstream)?;
     Ok(())
 }
 
@@ -385,15 +375,11 @@ enum AdminAuthError {
 
 impl IntoResponse for AdminAuthError {
     fn into_response(self) -> Response {
-        let status = match self {
-            AdminAuthError::NotConfigured => StatusCode::SERVICE_UNAVAILABLE,
-            AdminAuthError::InvalidState => StatusCode::BAD_REQUEST,
-            AdminAuthError::Upstream => StatusCode::BAD_GATEWAY,
+        let (status, code) = match self {
+            AdminAuthError::NotConfigured => (StatusCode::SERVICE_UNAVAILABLE, "not_configured"),
+            AdminAuthError::InvalidState => (StatusCode::BAD_REQUEST, "invalid_state"),
+            AdminAuthError::Upstream => (StatusCode::BAD_GATEWAY, "upstream_error"),
         };
-        (
-            status,
-            Json(json!({"error":{"code": format!("{self:?}").to_lowercase(), "message": self.to_string()}})),
-        )
-            .into_response()
+        api_json_error(status, code, self)
     }
 }

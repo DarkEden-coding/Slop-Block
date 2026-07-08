@@ -1,4 +1,5 @@
 use github::GitHubApi;
+use serde_json::json;
 
 pub fn github_content_delay_seconds() -> u64 {
     std::env::var("BACKFILL_SUBJECT_DELAY_SECONDS")
@@ -6,6 +7,34 @@ pub fn github_content_delay_seconds() -> u64 {
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(22)
         .max(1)
+}
+
+pub async fn sync_user_installations(
+    pool: &db::PgPool,
+    installations: &[github::Installation],
+    github_user_id: i64,
+    login: &str,
+    source: &str,
+) -> Result<(), sqlx::Error> {
+    for installation in installations {
+        let account = &installation.account;
+        let account_login = account
+            .as_ref()
+            .map(|a| a.login.as_str())
+            .unwrap_or("unknown");
+        let account_id = account.as_ref().map(|a| a.id as i64);
+        db::upsert_installation(
+            pool,
+            installation.id as i64,
+            account_login,
+            account_id,
+            None,
+            json!({"source": source}),
+        )
+        .await?;
+        db::upsert_installation_admin(pool, installation.id as i64, github_user_id, login).await?;
+    }
+    Ok(())
 }
 
 pub async fn ensure_policy_labels(

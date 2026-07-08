@@ -1,239 +1,14 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+mod resolve;
+mod types;
 
-use captcha::{
-    CaptchaProvider, CloudflareTurnstile, DevBypass, GoogleRecaptchaV2, HCaptcha,
-    PROVIDER_CLOUDFLARE_TURNSTILE, PROVIDER_DEV_BYPASS, PROVIDER_GOOGLE_RECAPTCHA_V2,
-    PROVIDER_HCAPTCHA,
-};
+pub use resolve::{hostname_allowed, verify_token};
+pub use types::*;
+
 use policy::VerificationPolicy;
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{AppState, Config};
-
-pub const SETTINGS_KEY: &str = "captcha";
-
-const PROVIDER_CATALOG: [(&str, &str); 3] = [
-    (PROVIDER_CLOUDFLARE_TURNSTILE, "Cloudflare Turnstile"),
-    (PROVIDER_HCAPTCHA, "hCaptcha"),
-    (PROVIDER_GOOGLE_RECAPTCHA_V2, "Google reCAPTCHA v2"),
-];
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum CredentialsSource {
-    Dashboard,
-    Environment,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CaptchaProviderInfo {
-    pub id: String,
-    pub label: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub site_key: Option<String>,
-    pub configured: bool,
-    pub secret_set: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source: Option<CredentialsSource>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CaptchaSettings {
-    pub available_providers: Vec<CaptchaProviderInfo>,
-    pub enabled_providers: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_provider: Option<String>,
-    pub dev_bypass: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CaptchaPublicConfig {
-    pub providers: Vec<CaptchaPublicProvider>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_provider: Option<String>,
-    pub dev_bypass: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CaptchaPublicProvider {
-    pub id: String,
-    pub label: String,
-    pub site_key: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct CaptchaProviderCredentialsUpdate {
-    #[serde(default)]
-    pub site_key: Option<String>,
-    #[serde(default)]
-    pub secret: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct CaptchaSettingsUpdate {
-    #[serde(default)]
-    pub enabled_providers: Vec<String>,
-    #[serde(default)]
-    pub default_provider: Option<String>,
-    #[serde(default)]
-    pub providers: HashMap<String, CaptchaProviderCredentialsUpdate>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SessionCaptchaConfig {
-    pub provider: String,
-    pub site_key: String,
-    pub label: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub alternate_providers: Vec<CaptchaPublicProvider>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ProviderCredentials {
-    site_key: String,
-    secret: String,
-    source: CredentialsSource,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ResolvedProvider {
-    id: String,
-    label: String,
-    credentials: Option<ProviderCredentials>,
-}
-
-fn stored_field(stored: Option<&Value>, provider_id: &str, field: &str) -> Option<String> {
-    stored?
-        .get("providers")?
-        .get(provider_id)?
-        .get(field)?
-        .as_str()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn env_field(config: &Config, provider_id: &str, field: &str) -> Option<String> {
-    let value = match (provider_id, field) {
-        (PROVIDER_CLOUDFLARE_TURNSTILE, "site_key") => config.turnstile_site_key.clone(),
-        (PROVIDER_CLOUDFLARE_TURNSTILE, "secret") => config.turnstile_secret.clone(),
-        (PROVIDER_HCAPTCHA, "site_key") => config.hcaptcha_site_key.clone(),
-        (PROVIDER_HCAPTCHA, "secret") => config.hcaptcha_secret.clone(),
-        (PROVIDER_GOOGLE_RECAPTCHA_V2, "site_key") => config.recaptcha_site_key.clone(),
-        (PROVIDER_GOOGLE_RECAPTCHA_V2, "secret") => config.recaptcha_secret.clone(),
-        _ => return None,
-    }?;
-    if value.trim().is_empty() {
-        None
-    } else {
-        Some(value)
-    }
-}
-
-fn resolve_site_key(config: &Config, stored: Option<&Value>, provider_id: &str) -> Option<String> {
-    stored_field(stored, provider_id, "site_key")
-        .or_else(|| env_field(config, provider_id, "site_key"))
-}
-
-fn resolve_secret(config: &Config, stored: Option<&Value>, provider_id: &str) -> Option<String> {
-    stored_field(stored, provider_id, "secret")
-        .and_then(|value| crate::secret_box::decrypt_field(config, &value))
-        .or_else(|| env_field(config, provider_id, "secret"))
-}
-
-fn resolve_credentials(
-    config: &Config,
-    stored: Option<&Value>,
-    provider_id: &str,
-) -> Option<ProviderCredentials> {
-    let site_key = resolve_site_key(config, stored, provider_id)?;
-    let secret = resolve_secret(config, stored, provider_id)?;
-    let source = if stored_field(stored, provider_id, "site_key").is_some()
-        || stored_field(stored, provider_id, "secret").is_some()
-    {
-        CredentialsSource::Dashboard
-    } else {
-        CredentialsSource::Environment
-    };
-    Some(ProviderCredentials {
-        site_key,
-        secret,
-        source,
-    })
-}
-
-fn resolve_providers(config: &Config, stored: Option<&Value>) -> Vec<ResolvedProvider> {
-    let mut providers = PROVIDER_CATALOG
-        .iter()
-        .map(|(id, label)| ResolvedProvider {
-            id: (*id).to_string(),
-            label: (*label).to_string(),
-            credentials: resolve_credentials(config, stored, id),
-        })
-        .collect::<Vec<_>>();
-    if config.turnstile_dev_bypass {
-        providers.push(ResolvedProvider {
-            id: PROVIDER_DEV_BYPASS.into(),
-            label: "Development bypass".into(),
-            credentials: Some(ProviderCredentials {
-                site_key: String::new(),
-                secret: String::new(),
-                source: CredentialsSource::Environment,
-            }),
-        });
-    }
-    providers
-}
-
-fn configured_provider_ids(config: &Config, stored: Option<&Value>) -> Vec<String> {
-    resolve_providers(config, stored)
-        .into_iter()
-        .filter(|provider| provider.credentials.is_some())
-        .map(|provider| provider.id)
-        .collect()
-}
-
-fn provider_infos(config: &Config, stored: Option<&Value>) -> Vec<CaptchaProviderInfo> {
-    PROVIDER_CATALOG
-        .iter()
-        .map(|(id, label)| {
-            let site_key = resolve_site_key(config, stored, id);
-            let secret_set = resolve_secret(config, stored, id).is_some();
-            let configured = site_key.is_some() && secret_set;
-            let source = if stored_field(stored, id, "site_key").is_some()
-                || stored_field(stored, id, "secret").is_some()
-            {
-                Some(CredentialsSource::Dashboard)
-            } else if configured || secret_set || site_key.is_some() {
-                Some(CredentialsSource::Environment)
-            } else {
-                None
-            };
-            CaptchaProviderInfo {
-                id: (*id).to_string(),
-                label: (*label).to_string(),
-                site_key,
-                configured,
-                secret_set,
-                source,
-            }
-        })
-        .chain(if config.turnstile_dev_bypass {
-            Some(CaptchaProviderInfo {
-                id: PROVIDER_DEV_BYPASS.into(),
-                label: "Development bypass".into(),
-                site_key: None,
-                configured: true,
-                secret_set: true,
-                source: Some(CredentialsSource::Environment),
-            })
-        } else {
-            None
-        })
-        .collect()
-}
+use resolve::{configured_provider_ids, provider_infos};
 
 pub fn parse_stored_preferences(
     stored: Option<&Value>,
@@ -248,8 +23,11 @@ pub fn parse_stored_preferences(
         .map(|items| {
             items
                 .iter()
-                .filter_map(|item| item.as_str().map(str::to_string))
-                .filter(|id| configured_ids.contains(id))
+                .filter_map(|item| item.as_str())
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .filter(|id| configured_ids.contains(&id.to_string()))
+                .map(str::to_string)
                 .collect::<Vec<_>>()
         })
         .filter(|items| !items.is_empty())
@@ -323,6 +101,8 @@ pub fn session_captcha_config(
     settings: &CaptchaSettings,
     provider_id: &str,
 ) -> Option<SessionCaptchaConfig> {
+    use captcha::PROVIDER_DEV_BYPASS;
+
     if settings.dev_bypass && provider_id == PROVIDER_DEV_BYPASS {
         return Some(SessionCaptchaConfig {
             provider: PROVIDER_DEV_BYPASS.into(),
@@ -349,49 +129,6 @@ pub fn session_captcha_config(
     })
 }
 
-/// Defense in depth: when the siteverify response reports the hostname the challenge
-/// was solved on, require it to match the host serving our verification pages.
-pub fn hostname_allowed(config: &Config, reported: &str) -> bool {
-    match url_host(&config.web_base_url) {
-        Some(expected) => expected.eq_ignore_ascii_case(reported.trim()),
-        None => true,
-    }
-}
-
-fn url_host(url: &str) -> Option<String> {
-    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
-    let authority = rest.split(['/', '?', '#']).next()?;
-    let host = authority.rsplit('@').next()?.split(':').next()?;
-    (!host.is_empty()).then(|| host.to_ascii_lowercase())
-}
-
-pub async fn verify_token(
-    config: &Arc<Config>,
-    stored: Option<&Value>,
-    provider_id: &str,
-    token: &str,
-) -> Result<captcha::CaptchaVerification, captcha::CaptchaError> {
-    if config.turnstile_dev_bypass && provider_id == PROVIDER_DEV_BYPASS {
-        return DevBypass::new(true).verify(token, None).await;
-    }
-    let credentials = resolve_credentials(config, stored, provider_id)
-        .ok_or(captcha::CaptchaError::NotConfigured)?;
-    match provider_id {
-        PROVIDER_CLOUDFLARE_TURNSTILE => {
-            CloudflareTurnstile::new(credentials.secret)
-                .verify(token, None)
-                .await
-        }
-        PROVIDER_HCAPTCHA => HCaptcha::new(credentials.secret).verify(token, None).await,
-        PROVIDER_GOOGLE_RECAPTCHA_V2 => {
-            GoogleRecaptchaV2::new(credentials.secret)
-                .verify(token, None)
-                .await
-        }
-        _ => Err(captcha::CaptchaError::NotConfigured),
-    }
-}
-
 pub fn merge_settings_update(
     existing: Option<Value>,
     update: &CaptchaSettingsUpdate,
@@ -408,7 +145,7 @@ pub fn merge_settings_update(
         .ok_or_else(|| "stored captcha provider settings are invalid".to_string())?;
 
     for (provider_id, credentials) in &update.providers {
-        if !PROVIDER_CATALOG
+        if !types::PROVIDER_CATALOG
             .iter()
             .any(|(id, _)| *id == provider_id.as_str())
         {
@@ -496,7 +233,10 @@ pub fn validate_settings_update(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use captcha::PROVIDER_CLOUDFLARE_TURNSTILE;
+    use resolve::resolve_credentials;
     use serde_json::json;
+    use std::collections::HashMap;
 
     fn test_config() -> Config {
         Config {
