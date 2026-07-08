@@ -245,7 +245,22 @@ pub trait GitHubApi: Send + Sync {
         owner: &str,
         repo: &str,
     ) -> Result<Vec<PullRequest>, GitHubError>;
+    async fn issue_labels(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+    ) -> Result<Vec<Label>, GitHubError>;
     async fn add_labels(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        labels: &[String],
+    ) -> Result<Vec<Label>, GitHubError>;
+    async fn set_labels(
         &self,
         token: &str,
         owner: &str,
@@ -511,6 +526,21 @@ impl GitHubApi for ReqwestGitHubClient {
         }
         Ok(out)
     }
+    async fn issue_labels(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+    ) -> Result<Vec<Label>, GitHubError> {
+        self.send_json(self.authed(
+            reqwest::Method::GET,
+            &Self::repo_path(owner, repo, &format!("/issues/{issue_number}/labels")),
+            token,
+        ))
+        .await
+    }
+
     async fn add_labels(
         &self,
         token: &str,
@@ -522,6 +552,24 @@ impl GitHubApi for ReqwestGitHubClient {
         self.send_json(
             self.authed(
                 reqwest::Method::POST,
+                &Self::repo_path(owner, repo, &format!("/issues/{issue_number}/labels")),
+                token,
+            )
+            .json(&serde_json::json!({"labels": labels})),
+        )
+        .await
+    }
+    async fn set_labels(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        labels: &[String],
+    ) -> Result<Vec<Label>, GitHubError> {
+        self.send_json(
+            self.authed(
+                reqwest::Method::PUT,
                 &Self::repo_path(owner, repo, &format!("/issues/{issue_number}/labels")),
                 token,
             )

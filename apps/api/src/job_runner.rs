@@ -195,14 +195,15 @@ async fn enqueue_item(
 ) -> anyhow::Result<()> {
     let payload = json!({"backfill_run_id": run_id, "backfill_item_id": item_id});
     let key = format!("backfill:{run_id}:item:{item_id}");
-    // GitHub documents a general secondary content-creation limit of
-    // 500 content-generating requests/hour. A required PR backfill can create
-    // up to 4 content requests (2 label adds + 1 comment + 1 check run), so
-    // schedule at floor(3600 / (500 / 4)) = 28.8s, rounded up to 29s.
+    // GitHub documents secondary limits of 80 content-generating requests/minute
+    // and 500/hour. We combine both required labels into one Add Labels call, so
+    // a required PR backfill now creates at most 3 content-generating requests:
+    // labels + comment + check run. The hourly limit is tighter:
+    // ceil(3600 / (500 / 3)) = 22 seconds per item.
     let delay_seconds = std::env::var("BACKFILL_SUBJECT_DELAY_SECONDS")
         .ok()
         .and_then(|v| v.parse::<i64>().ok())
-        .unwrap_or(29)
+        .unwrap_or(22)
         .max(1);
     let run_at = OffsetDateTime::now_utc()
         + Duration::from_secs((i64::from(sequence) * delay_seconds) as u64);

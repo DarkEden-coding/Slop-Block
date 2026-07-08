@@ -179,17 +179,18 @@ pub async fn process_subject(
         &work.login,
         &work.html_url,
     )?;
-    for label in [policy.apply_label.as_ref(), policy.pending_label.as_ref()]
+    let required_labels = [policy.apply_label.clone(), policy.pending_label.clone()]
         .into_iter()
         .flatten()
-    {
+        .collect::<Vec<_>>();
+    if !required_labels.is_empty() {
         if let Err(err) = client
             .add_labels(
                 &token,
                 &repo.owner,
                 &repo.name,
                 work.number,
-                std::slice::from_ref(label),
+                &required_labels,
             )
             .await
         {

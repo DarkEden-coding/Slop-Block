@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use axum::{
     extract::{Path, Query, State},
     http::{header, HeaderMap, StatusCode},
@@ -607,54 +609,157 @@ async fn finalize(state: &AppState, s: &db::VerificationSession) {
             {
                 sessions.extend(done.into_iter().filter(|session| session.id != s.id));
             }
-            if let Ok(comments) =
-                db::list_bot_artifacts_for_user(pool, s.repository_id, user_id, "comment").await
+        }
+        let mut handled = HashSet::new();
+        for session in sessions {
+            let issue_number = session.subject_id.parse().unwrap_or(0);
+            let subject_type = session.subject_type.as_str();
+            apply_verified_state(
+                pool,
+                &client,
+                &token,
+                &repo,
+                &p,
+                subject_type,
+                issue_number,
+                None,
+                None,
+            )
+            .await;
+            handled.insert((subject_type.to_string(), issue_number));
+            tokio::time::sleep(std::time::Duration::from_secs(22)).await;
+        }
+
+        // A single successful verification trusts the GitHub user for the repository.
+        // Propagate that trusted state to other currently-open issues/PRs by the same
+        // author, even if they never opened each individual verification link.
+        if let Some(user_id) = s.github_user_id {
+            if let Ok(open_items) = client
+                .list_open_issues(&token, &repo.owner, &repo.name)
+                .await
             {
-                for a in comments {
-                    if let Some(id) = a.external_id.and_then(|x| x.parse().ok()) {
-                        let _ = client
-                            .delete_issue_comment(&token, &repo.owner, &repo.name, id)
-                            .await;
+                for issue in open_items {
+                    if issue.user.id as i64 != user_id {
+                        continue;
                     }
-                }
-            }
-            if let Ok(checks) =
-                db::list_bot_artifacts_for_user(pool, s.repository_id, user_id, "check_run").await
-            {
-                for a in checks {
-                    if let Some(id) = a.external_id.and_then(|x| x.parse().ok()) {
-                        let sha = a.data.get("sha").and_then(|v| v.as_str()).unwrap_or("");
-                        let req = CheckRunRequest {
-                            name: "Human Auth".into(),
-                            head_sha: sha.into(),
-                            status: Some("completed".into()),
-                            conclusion: Some("success".into()),
-                            details_url: None,
-                            output: Some(
-                                json!({"title":"Human verification complete","summary":"The author completed OAuth and CAPTCHA verification."}),
-                            ),
-                        };
-                        let _ = client
-                            .update_check_run(&token, &repo.owner, &repo.name, id, &req)
-                            .await;
+                    let subject_type = if issue.pull_request.is_some() {
+                        "pull_request"
+                    } else {
+                        "issue"
+                    };
+                    if handled.contains(&(subject_type.to_string(), issue.number)) {
+                        continue;
                     }
+                    apply_verified_state(
+                        pool,
+                        &client,
+                        &token,
+                        &repo,
+                        &p,
+                        subject_type,
+                        issue.number,
+                        None,
+                        Some(
+                            issue
+                                .labels
+                                .iter()
+                                .map(|label| label.name.clone())
+                                .collect(),
+                        ),
+                    )
+                    .await;
+                    handled.insert((subject_type.to_string(), issue.number));
+                    // Same budget as backfill: each propagated item can perform up to
+                    // 3 content-generating mutations (set labels, delete comment,
+                    // update check run). Sleep 22s to stay just under GitHub's
+                    // documented 500 content-generating requests/hour limit.
+                    tokio::time::sleep(std::time::Duration::from_secs(22)).await;
                 }
             }
         }
-        for session in sessions {
-            let issue_number = session.subject_id.parse().unwrap_or(0);
-            for label in [p.apply_label.as_ref(), p.pending_label.as_ref()]
-                .into_iter()
-                .flatten()
-            {
-                let _ = client
-                    .remove_label(&token, &repo.owner, &repo.name, issue_number, label)
-                    .await;
-            }
-            if let Some(label) = p.verified_label.clone() {
-                let _ = client
-                    .add_labels(&token, &repo.owner, &repo.name, issue_number, &[label])
-                    .await;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_verified_state(
+    pool: &db::PgPool,
+    client: &github::ReqwestGitHubClient,
+    token: &str,
+    repo: &db::GithubRepository,
+    policy: &policy::VerificationPolicy,
+    subject_type: &str,
+    issue_number: u64,
+    head_sha: Option<&str>,
+    current_labels: Option<Vec<String>>,
+) {
+    let labels = match current_labels {
+        Some(labels) => labels,
+        None => client
+            .issue_labels(token, &repo.owner, &repo.name, issue_number)
+            .await
+            .map(|labels| labels.into_iter().map(|label| label.name).collect())
+            .unwrap_or_default(),
+    };
+    let remove = [policy.apply_label.as_ref(), policy.pending_label.as_ref()]
+        .into_iter()
+        .flatten()
+        .collect::<std::collections::HashSet<_>>();
+    let mut next_labels = labels
+        .into_iter()
+        .filter(|label| !remove.contains(label))
+        .collect::<Vec<_>>();
+    if let Some(label) = policy.verified_label.as_ref() {
+        if !next_labels.iter().any(|existing| existing == label) {
+            next_labels.push(label.clone());
+        }
+    }
+    let _ = client
+        .set_labels(token, &repo.owner, &repo.name, issue_number, &next_labels)
+        .await;
+    if let Ok(Some(artifact)) = db::get_bot_artifact(
+        pool,
+        repo.repository_id,
+        subject_type,
+        &issue_number.to_string(),
+        "comment",
+    )
+    .await
+    {
+        if let Some(id) = artifact.external_id.and_then(|x| x.parse().ok()) {
+            let _ = client
+                .delete_issue_comment(token, &repo.owner, &repo.name, id)
+                .await;
+        }
+    }
+    if subject_type == "pull_request" {
+        if let Ok(Some(artifact)) = db::get_bot_artifact(
+            pool,
+            repo.repository_id,
+            subject_type,
+            &issue_number.to_string(),
+            "check_run",
+        )
+        .await
+        {
+            if let Some(id) = artifact.external_id.and_then(|x| x.parse().ok()) {
+                let sha = head_sha
+                    .or_else(|| artifact.data.get("sha").and_then(|v| v.as_str()))
+                    .unwrap_or("");
+                if !sha.is_empty() {
+                    let req = CheckRunRequest {
+                        name: "Human Auth".into(),
+                        head_sha: sha.into(),
+                        status: Some("completed".into()),
+                        conclusion: Some("success".into()),
+                        details_url: None,
+                        output: Some(
+                            json!({"title":"Human verification complete","summary":"The author completed OAuth and CAPTCHA verification."}),
+                        ),
+                    };
+                    let _ = client
+                        .update_check_run(token, &repo.owner, &repo.name, id, &req)
+                        .await;
+                }
             }
         }
     }
