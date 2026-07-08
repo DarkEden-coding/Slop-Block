@@ -234,9 +234,27 @@ pub async fn process_subject(
             if let Some(a) =
                 artifact.and_then(|a| a.external_id.and_then(|id| id.parse::<u64>().ok()))
             {
-                client
+                match client
                     .update_issue_comment(&token, &repo.owner, &repo.name, a, &body)
                     .await
+                {
+                    Ok(comment) => Ok(comment),
+                    // Verification propagation can delete the old verification comment
+                    // while a backfill item is running. Treat that race as stale state
+                    // and create the comment again if this item still requires it.
+                    Err(github::GitHubError::ApiStatus(status)) if status.as_u16() == 404 => {
+                        client
+                            .create_issue_comment(
+                                &token,
+                                &repo.owner,
+                                &repo.name,
+                                work.number,
+                                &body,
+                            )
+                            .await
+                    }
+                    Err(err) => Err(err),
+                }
             } else {
                 client
                     .create_issue_comment(&token, &repo.owner, &repo.name, work.number, &body)
@@ -292,9 +310,20 @@ pub async fn process_subject(
             let check = if let Some(a) =
                 artifact.and_then(|a| a.external_id.and_then(|id| id.parse::<u64>().ok()))
             {
-                client
+                match client
                     .update_check_run(&token, &repo.owner, &repo.name, a, &req)
                     .await
+                {
+                    Ok(check) => Ok(check),
+                    // A concurrent verification can make tracked check-run state stale.
+                    // If the old check run is gone, recreate the required check run.
+                    Err(github::GitHubError::ApiStatus(status)) if status.as_u16() == 404 => {
+                        client
+                            .create_check_run(&token, &repo.owner, &repo.name, &req)
+                            .await
+                    }
+                    Err(err) => Err(err),
+                }
             } else {
                 client
                     .create_check_run(&token, &repo.owner, &repo.name, &req)
