@@ -6,16 +6,12 @@ use axum::{
     routing::post,
     Json, Router,
 };
-use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::Sha256;
 use thiserror::Error;
 use tracing::{error, info};
 
 use crate::{AppState, ErrorBody, ErrorDetail};
-
-type HmacSha256 = Hmac<Sha256>;
 
 pub fn routes() -> Router<AppState> {
     Router::new().route("/api/github/webhook", post(handle_github_webhook))
@@ -420,18 +416,8 @@ async fn upsert_repository_from_value(
 
 fn verify_signature(secret: &str, headers: &HeaderMap, body: &[u8]) -> Result<(), WebhookError> {
     let signature = header_str(headers, "x-hub-signature-256")?;
-    let expected = signature
-        .strip_prefix("sha256=")
-        .ok_or(WebhookError::InvalidSignature)?;
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-        .map_err(|_| WebhookError::InvalidSignature)?;
-    mac.update(body);
-    let actual = hex::encode(mac.finalize().into_bytes());
-    if constant_time_eq(actual.as_bytes(), expected.as_bytes()) {
-        Ok(())
-    } else {
-        Err(WebhookError::InvalidSignature)
-    }
+    github::verify_webhook_signature(secret.as_bytes(), body, signature)
+        .map_err(|_| WebhookError::InvalidSignature)
 }
 
 fn header_str<'a>(headers: &'a HeaderMap, name: &'static str) -> Result<&'a str, WebhookError> {
@@ -439,13 +425,6 @@ fn header_str<'a>(headers: &'a HeaderMap, name: &'static str) -> Result<&'a str,
         .get(name)
         .and_then(|value| value.to_str().ok())
         .ok_or(WebhookError::MissingHeader(name))
-}
-
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 #[derive(Debug, Error)]
@@ -462,12 +441,8 @@ pub enum WebhookError {
     InvalidJson,
     #[error("missing required field {0}")]
     MissingField(&'static str),
-    #[error("GitHub app credentials are not configured")]
-    GitHubNotConfigured,
     #[error("webhook installation does not match stored repository installation")]
     InstallationMismatch,
-    #[error("GitHub API error: {0}")]
-    GitHub(#[from] github::GitHubError),
     #[error("database error")]
     Db(#[from] sqlx::Error),
 }
@@ -475,9 +450,7 @@ pub enum WebhookError {
 impl IntoResponse for WebhookError {
     fn into_response(self) -> Response {
         let (status, code) = match self {
-            WebhookError::MissingSecret
-            | WebhookError::DbUnavailable
-            | WebhookError::GitHubNotConfigured => {
+            WebhookError::MissingSecret | WebhookError::DbUnavailable => {
                 (StatusCode::SERVICE_UNAVAILABLE, "service_unavailable")
             }
             WebhookError::MissingHeader(_) | WebhookError::InvalidSignature => {
@@ -486,9 +459,7 @@ impl IntoResponse for WebhookError {
             WebhookError::InvalidJson
             | WebhookError::MissingField(_)
             | WebhookError::InstallationMismatch => (StatusCode::BAD_REQUEST, "bad_request"),
-            WebhookError::GitHub(_) | WebhookError::Db(_) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
-            }
+            WebhookError::Db(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
         };
         let body = Json(ErrorBody {
             error: ErrorDetail {
@@ -513,7 +484,6 @@ mod tests {
             database_url: "postgres://user:pass@localhost/db".into(),
             cors_allowed_origins: vec!["http://localhost:3000".into()],
             cookie_secure: true,
-            session_cookie_name: "gho_session".into(),
             github_webhook_secret: secret.map(str::to_owned),
             github_app_id: None,
             github_private_key: None,
@@ -537,12 +507,13 @@ mod tests {
             secrets_encryption_key: None,
             trust_proxy_headers: false,
             hosted_mode: false,
-            github_app_slug: None,
         })
     }
 
     fn signature(secret: &str, body: &[u8]) -> String {
-        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
         mac.update(body);
         format!("sha256={}", hex::encode(mac.finalize().into_bytes()))
     }

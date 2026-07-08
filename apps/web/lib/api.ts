@@ -61,12 +61,6 @@ export type CaptchaPublicProvider = {
   site_key: string;
 };
 
-export type CaptchaPublicConfig = {
-  providers: CaptchaPublicProvider[];
-  default_provider: string | null;
-  dev_bypass: boolean;
-};
-
 export type SessionCaptchaConfig = {
   provider: string;
   site_key: string;
@@ -86,7 +80,6 @@ export type RepoPolicy = {
   verified_label: string | null;
   pending_label: string | null;
   comment_on_required: boolean;
-  close_unverified: boolean;
   captcha_provider: string | null;
 };
 
@@ -151,6 +144,10 @@ function url(path: string) {
   return `${API_BASE_URL.replace(/\/$/, "")}${path}`;
 }
 
+export function apiUrl(path: string) {
+  return url(path);
+}
+
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
@@ -194,7 +191,6 @@ export const defaultPolicy: RepoPolicy = {
   verified_label: "human-auth-verified",
   pending_label: "human-auth-pending",
   comment_on_required: true,
-  close_unverified: false,
   captcha_provider: null,
 };
 

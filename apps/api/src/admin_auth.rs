@@ -7,16 +7,12 @@ use axum::{
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use github::GitHubApi;
-use hmac::{Hmac, Mac};
-use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sha2::Sha256;
 use time::OffsetDateTime;
 
+use crate::web_util::{constant_time_eq, find_cookie, random_state, sign_hmac_url_safe};
 use crate::AppState;
-
-type HmacSha256 = Hmac<Sha256>;
 const ADMIN_OAUTH_STATE_COOKIE: &str = "gho_admin_oauth_state";
 // Sessions are stateless HMAC cookies with no server-side revocation, so keep the
 // window short; re-authentication is a single GitHub OAuth redirect.
@@ -26,7 +22,6 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/auth/me", get(me))
         .route("/api/auth/github/start", get(github_start))
-        .route("/api/auth/github/callback", get(github_callback))
         .route("/api/auth/logout", post(logout))
 }
 
@@ -49,13 +44,6 @@ struct MeResponse {
 struct StartQuery {
     #[serde(default)]
     return_to: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct CallbackQuery {
-    code: Option<String>,
-    state: Option<String>,
-    error: Option<String>,
 }
 
 async fn me(State(state): State<AppState>, headers: HeaderMap) -> Json<MeResponse> {
@@ -101,19 +89,6 @@ async fn github_start(
     res.headers_mut()
         .insert(header::SET_COOKIE, cookie.parse().unwrap());
     Ok(res)
-}
-
-async fn github_callback(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Query(q): Query<CallbackQuery>,
-) -> Result<Response, AdminAuthError> {
-    if q.error.is_some() {
-        return Ok(redirect_home(&state, "auth=denied"));
-    }
-    let code = q.code.ok_or(AdminAuthError::BadRequest)?;
-    let st = q.state.ok_or(AdminAuthError::BadRequest)?;
-    process_admin_oauth_callback(&state, &headers, &code, &st, &admin_callback_url(&state)).await
 }
 
 pub async fn handle_shared_oauth_callback(
@@ -284,7 +259,7 @@ pub fn authorize_admin_mutation(state: &AppState, headers: &HeaderMap) -> bool {
                 .is_some_and(|value| value == "github-human-auth"))
 }
 
-fn bearer_authorized(state: &AppState, headers: &HeaderMap) -> bool {
+pub fn bearer_authorized(state: &AppState, headers: &HeaderMap) -> bool {
     if let Some(expected) = state.config.admin_api_token.as_deref() {
         if let Some(provided) = bearer_token(headers) {
             return constant_time_eq(provided.as_bytes(), expected.as_bytes());
@@ -297,10 +272,6 @@ pub fn current_admin_user(state: &AppState, headers: &HeaderMap) -> Option<Admin
     let raw = find_cookie(headers, &state.config.admin_session_cookie_name)?;
     let user = decode_session(state, &raw)?;
     (state.config.hosted_mode || is_allowed_login(state, &user.login)).then_some(user)
-}
-
-pub fn bearer_is_authorized(state: &AppState, headers: &HeaderMap) -> bool {
-    bearer_authorized(state, headers)
 }
 
 pub fn mutation_header_present(headers: &HeaderMap) -> bool {
@@ -325,7 +296,7 @@ fn encode_session(state: &AppState, user: &AdminUser) -> Option<String> {
         user,
     })
     .ok()?;
-    let sig = sign(secret, &payload)?;
+    let sig = sign_hmac_url_safe(secret, &payload)?;
     Some(format!("{}.{}", URL_SAFE_NO_PAD.encode(payload), sig))
 }
 
@@ -340,7 +311,10 @@ fn decode_session(state: &AppState, raw: &str) -> Option<AdminUser> {
     let (payload_b64, sig) = raw.split_once('.')?;
     let payload = URL_SAFE_NO_PAD.decode(payload_b64).ok()?;
     let secret = session_secret(state)?;
-    if !constant_time_eq(sign(secret, &payload)?.as_bytes(), sig.as_bytes()) {
+    if !constant_time_eq(
+        sign_hmac_url_safe(secret, &payload)?.as_bytes(),
+        sig.as_bytes(),
+    ) {
         return None;
     }
     let payload: SessionPayload = serde_json::from_slice(&payload).ok()?;
@@ -352,12 +326,6 @@ fn decode_session(state: &AppState, raw: &str) -> Option<AdminUser> {
 
 fn session_secret(state: &AppState) -> Option<&str> {
     state.config.admin_session_secret.as_deref()
-}
-
-fn sign(secret: &str, msg: &[u8]) -> Option<String> {
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).ok()?;
-    mac.update(msg);
-    Some(URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
 }
 
 fn is_allowed_login(state: &AppState, login: &str) -> bool {
@@ -375,29 +343,6 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
-}
-
-fn find_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
-    headers
-        .get(header::COOKIE)?
-        .to_str()
-        .ok()?
-        .split(';')
-        .map(str::trim)
-        .find_map(|c| c.strip_prefix(&format!("{name}=")).map(ToOwned::to_owned))
-}
-
-fn random_state() -> String {
-    let mut bytes = [0_u8; 32];
-    OsRng.fill_bytes(&mut bytes);
-    URL_SAFE_NO_PAD.encode(bytes)
-}
-
-fn admin_callback_url(state: &AppState) -> String {
-    format!(
-        "{}/api/auth/github/callback",
-        state.config.api_base_url.trim_end_matches('/')
-    )
 }
 
 fn shared_oauth_callback_url(state: &AppState) -> String {
@@ -428,19 +373,10 @@ fn secure_suffix(state: &AppState) -> &'static str {
     }
 }
 
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
 #[derive(Debug, thiserror::Error)]
 enum AdminAuthError {
     #[error("not configured")]
     NotConfigured,
-    #[error("bad request")]
-    BadRequest,
     #[error("invalid state")]
     InvalidState,
     #[error("upstream error")]
@@ -451,7 +387,7 @@ impl IntoResponse for AdminAuthError {
     fn into_response(self) -> Response {
         let status = match self {
             AdminAuthError::NotConfigured => StatusCode::SERVICE_UNAVAILABLE,
-            AdminAuthError::BadRequest | AdminAuthError::InvalidState => StatusCode::BAD_REQUEST,
+            AdminAuthError::InvalidState => StatusCode::BAD_REQUEST,
             AdminAuthError::Upstream => StatusCode::BAD_GATEWAY,
         };
         (

@@ -110,40 +110,6 @@ pub struct PullRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct InstallationEvent {
-    pub action: String,
-    pub installation: Installation,
-    pub repositories: Option<Vec<Repository>>,
-    pub sender: User,
-}
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RepositoriesEvent {
-    pub action: String,
-    pub installation: Installation,
-    pub repository_selection: Option<String>,
-    pub repositories_added: Vec<Repository>,
-    pub repositories_removed: Vec<Repository>,
-    pub sender: User,
-}
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct IssuesEvent {
-    pub action: String,
-    pub issue: Issue,
-    pub repository: Repository,
-    pub installation: Option<Installation>,
-    pub sender: User,
-}
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PullRequestEvent {
-    pub action: String,
-    pub number: u64,
-    pub pull_request: PullRequest,
-    pub repository: Repository,
-    pub installation: Option<Installation>,
-    pub sender: User,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InstallationToken {
     pub token: String,
     pub expires_at: String,
@@ -338,18 +304,7 @@ pub struct ReqwestGitHubClient {
     api_base: String,
 }
 
-impl Default for ReqwestGitHubClient {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 impl ReqwestGitHubClient {
-    pub fn new() -> Self {
-        Self {
-            client: reqwest::Client::new(),
-            api_base: "https://api.github.com".into(),
-        }
-    }
     pub fn with_base_url(api_base: impl Into<String>) -> Self {
         Self {
             client: reqwest::Client::new(),

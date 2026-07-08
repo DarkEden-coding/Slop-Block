@@ -7,23 +7,10 @@ use time::OffsetDateTime;
 pub type Result<T> = std::result::Result<T, sqlx::Error>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct JobId(pub i64);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum JobStatus {
-    Queued,
-    Running,
-    Completed,
-    Failed,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JobKind {
     GitHubSubjectEvent,
     BackfillScan,
     BackfillSubject,
-    GitHubArtifactUpdate,
-    AutoClose,
 }
 
 impl JobKind {
@@ -32,8 +19,6 @@ impl JobKind {
             Self::GitHubSubjectEvent => "github_subject_event",
             Self::BackfillScan => "backfill_scan",
             Self::BackfillSubject => "backfill_subject",
-            Self::GitHubArtifactUpdate => "github_artifact_update",
-            Self::AutoClose => "auto_close",
         }
     }
 }
@@ -69,16 +54,6 @@ impl RetryPolicy {
             .saturating_mul(factor)
             .min(self.max_delay)
     }
-}
-
-pub async fn enqueue(
-    pool: &PgPool,
-    kind: JobKind,
-    payload: Value,
-    run_at: Option<OffsetDateTime>,
-    max_attempts: i32,
-) -> Result<Job> {
-    db::enqueue_job(pool, kind.as_str(), payload, run_at, max_attempts).await
 }
 
 pub async fn enqueue_deduped(

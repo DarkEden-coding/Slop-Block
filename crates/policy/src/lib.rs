@@ -13,7 +13,6 @@ pub struct VerificationPolicy {
     pub verified_label: Option<String>,
     pub pending_label: Option<String>,
     pub comment_on_required: bool,
-    pub close_unverified: bool,
     pub captcha_provider: Option<String>,
 }
 
@@ -30,7 +29,6 @@ impl Default for VerificationPolicy {
             verified_label: Some("human-auth-verified".into()),
             pending_label: Some("human-auth-pending".into()),
             comment_on_required: true,
-            close_unverified: false,
             captcha_provider: None,
         }
     }
@@ -120,7 +118,6 @@ pub enum PolicyAction {
     RemoveLabel(String),
     Comment(String),
     CreateCheck { name: String, conclusion: String },
-    Close,
 }
 
 pub fn decide(policy: &VerificationPolicy, input: &DecisionInput) -> PolicyDecision {
@@ -234,9 +231,6 @@ fn pending_actions(policy: &VerificationPolicy) -> Vec<PolicyAction> {
         }
         .into(),
     });
-    if policy.close_unverified && policy.check_mode == CheckMode::Enforce {
-        actions.push(PolicyAction::Close);
-    }
     actions
 }
 

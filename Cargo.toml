@@ -6,7 +6,6 @@ members = [
   "crates/github",
   "crates/jobs",
   "crates/policy",
-  "crates/shared",
 ]
 resolver = "2"
 

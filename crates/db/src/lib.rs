@@ -550,20 +550,6 @@ pub async fn complete_pending_sessions_for_user(
         .await
 }
 
-pub async fn list_bot_artifacts_for_user(
-    pool: &PgPool,
-    repository_id: i64,
-    github_user_id: i64,
-    artifact_type: &str,
-) -> Result<Vec<BotArtifact>> {
-    sqlx::query_as::<_, BotArtifact>("SELECT a.* FROM bot_artifacts a INNER JOIN verification_sessions s ON s.repository_id=a.repository_id AND s.subject_type=a.subject_type AND s.subject_id=a.subject_id WHERE a.repository_id=$1 AND s.github_user_id=$2 AND a.artifact_type=$3 ORDER BY a.created_at")
-        .bind(repository_id)
-        .bind(github_user_id)
-        .bind(artifact_type)
-        .fetch_all(pool)
-        .await
-}
-
 pub async fn upsert_bot_artifact(
     pool: &PgPool,
     repository_id: i64,

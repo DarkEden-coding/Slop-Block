@@ -60,7 +60,6 @@ mod tests {
             database_url: "postgres://user:pass@localhost/db".into(),
             cors_allowed_origins: vec!["http://localhost:3000".into()],
             cookie_secure: false,
-            session_cookie_name: "gho_session".into(),
             github_webhook_secret: None,
             github_app_id: None,
             github_private_key: None,
@@ -84,7 +83,6 @@ mod tests {
             secrets_encryption_key: key,
             trust_proxy_headers: false,
             hosted_mode: false,
-            github_app_slug: None,
         }
     }
 

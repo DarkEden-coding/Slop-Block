@@ -28,7 +28,3 @@ export function showSuccessToast(message: string, title = "Success") {
 export function showErrorToast(message: string, title = "Error") {
   showToast(message, "error", title);
 }
-
-export function showInfoToast(message: string, title?: string) {
-  showToast(message, "info", title);
-}

@@ -21,7 +21,6 @@ policy = { path = "../../crates/policy" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-shared = { path = "../../crates/shared" }
 sqlx.workspace = true
 thiserror.workspace = true
 time.workspace = true

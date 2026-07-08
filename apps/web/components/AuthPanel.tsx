@@ -3,13 +3,8 @@
 import Image from "next/image";
 import type React from "react";
 import { useEffect, useState } from "react";
-import { API_BASE_URL, apiFetch, type AuthMe } from "../lib/api";
+import { API_BASE_URL, apiFetch, apiUrl, type AuthMe } from "../lib/api";
 import { showSuccessToast } from "../lib/toast";
-
-function absoluteApi(path: string) {
-  if (!API_BASE_URL) return path;
-  return `${API_BASE_URL.replace(/\/$/, "")}${path}`;
-}
 
 function withReturnTo(loginUrl: string) {
   if (typeof window === "undefined") return loginUrl;
@@ -25,7 +20,7 @@ export function AuthPanel({ compact = false, hideLogin = false }: { compact?: bo
   useEffect(() => {
     apiFetch<AuthMe>("/api/auth/me")
       .then(setMe)
-      .catch(() => setMe({ authenticated: false, user: null, login_url: absoluteApi("/api/auth/github/start") }))
+      .catch(() => setMe({ authenticated: false, user: null, login_url: apiUrl("/api/auth/github/start") }))
       .finally(() => setLoading(false));
   }, []);
 
@@ -50,7 +45,7 @@ export function AuthPanel({ compact = false, hideLogin = false }: { compact?: bo
     if (hideLogin) return null;
     return (
       <a
-        href={withReturnTo(me?.login_url ?? absoluteApi("/api/auth/github/start"))}
+        href={withReturnTo(me?.login_url ?? apiUrl("/api/auth/github/start"))}
         className="inline-flex h-11 items-center justify-center rounded-xl bg-cyan-300 px-5 text-sm font-bold leading-none text-slate-950 shadow-xl shadow-cyan-950/30 transition hover:-translate-y-0.5 hover:bg-cyan-200"
       >
         Login with GitHub
@@ -94,7 +89,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     apiFetch<AuthMe>("/api/auth/me")
       .then(setMe)
-      .catch(() => setMe({ authenticated: false, user: null, login_url: absoluteApi("/api/auth/github/start") }))
+      .catch(() => setMe({ authenticated: false, user: null, login_url: apiUrl("/api/auth/github/start") }))
       .finally(() => setLoading(false));
   }, []);
 
@@ -105,7 +100,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
         <h2 className="text-2xl font-bold text-white">Login required</h2>
         <p className="mt-2 max-w-xl text-slate-400">Sign in with GitHub to manage installations, repositories, policies, and allowlists.</p>
         <a
-          href={withReturnTo(me?.login_url ?? absoluteApi("/api/auth/github/start"))}
+          href={withReturnTo(me?.login_url ?? apiUrl("/api/auth/github/start"))}
           className="mt-6 inline-flex h-11 items-center justify-center rounded-xl bg-cyan-300 px-5 text-sm font-bold leading-none text-slate-950 shadow-xl shadow-cyan-950/30 transition hover:bg-cyan-200"
         >
           Login with GitHub

@@ -1,14 +1,12 @@
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use github::{CheckRunRequest, GitHubApi, ReqwestGitHubClient};
-use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sha2::Sha256;
 use time::OffsetDateTime;
 
+use crate::github_helpers::ensure_policy_labels;
+use crate::github_tokens::installation_token;
+use crate::web_util::sign_source_payload;
 use crate::AppState;
-
-type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubjectWork {
@@ -54,18 +52,6 @@ pub async fn process_subject(
         }
     };
 
-    let app_id = state
-        .config
-        .github_app_id
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("github app id missing"))?;
-    let private_key = state
-        .config
-        .github_private_key
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("github private key missing"))?;
-    let jwt = github::create_app_jwt(app_id, private_key)?;
-    let client = ReqwestGitHubClient::with_base_url(&state.config.github_api_base);
     if work
         .installation_id
         .is_some_and(|id| id as i64 != repo.installation_id)
@@ -73,16 +59,17 @@ pub async fn process_subject(
         anyhow::bail!("installation mismatch");
     }
     let installation_id = work.installation_id.unwrap_or(repo.installation_id as u64);
+    let client = ReqwestGitHubClient::with_base_url(&state.config.github_api_base);
     let bucket = format!("installation:{installation_id}:core");
     if let Some(paused) = db::github_pause_until(pool, &bucket).await? {
         anyhow::bail!("github_rate_limited_until:{paused}");
     }
-    let token = match client
-        .exchange_installation_token(&jwt, installation_id)
-        .await
-    {
-        Ok(t) => t.token,
-        Err(err) => return Err(record_github_error(pool, &bucket, err).await),
+    let token = match installation_token(state, installation_id).await {
+        Ok(token) => token,
+        Err(err) => match err.downcast::<github::GitHubError>() {
+            Ok(gh_err) => return Err(record_github_error(pool, &bucket, gh_err).await),
+            Err(err) => return Err(err),
+        },
     };
 
     let is_bot = matches!(work.user_type.as_deref(), Some("Bot"));
@@ -390,35 +377,6 @@ pub async fn process_subject(
     })
 }
 
-async fn ensure_policy_labels(
-    client: &ReqwestGitHubClient,
-    token: &str,
-    repo: &db::GithubRepository,
-    policy: &policy::VerificationPolicy,
-) {
-    let labels = [
-        policy.apply_label.as_ref(),
-        policy.pending_label.as_ref(),
-        policy.verified_label.as_ref(),
-    ]
-    .into_iter()
-    .flatten();
-    for label in labels {
-        let (color, description) = match Some(label.as_str()) {
-            _ if policy.apply_label.as_ref() == Some(label) => {
-                ("d73a4a", Some("Human verification is required"))
-            }
-            _ if policy.pending_label.as_ref() == Some(label) => {
-                ("fbca04", Some("Human verification is pending"))
-            }
-            _ => ("0e8a16", Some("Human verification is complete")),
-        };
-        let _ = client
-            .create_label(token, &repo.owner, &repo.name, label, color, description)
-            .await;
-    }
-}
-
 async fn record_github_error(
     pool: &db::PgPool,
     bucket: &str,
@@ -468,10 +426,21 @@ fn source_verify_url(
         .as_ref()
         .or(state.config.github_webhook_secret.as_ref())
         .ok_or_else(|| anyhow::anyhow!("missing signing secret"))?;
-    let payload =
-        format!("{repository_id}|{subject_type}|{number}|{github_user_id}|{login}|{subject_url}");
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())?;
-    mac.update(payload.as_bytes());
-    let sig = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
-    Ok(format!("{}/verify/source?repo={repository_id}&type={}&number={number}&user_id={github_user_id}&login={}&url={}&sig={sig}", state.config.web_base_url.trim_end_matches('/'), urlencoding::encode(subject_type), urlencoding::encode(login), urlencoding::encode(subject_url)))
+    let sig = sign_source_payload(
+        secret,
+        repository_id,
+        subject_type,
+        number,
+        github_user_id,
+        login,
+        subject_url,
+    )
+    .ok_or_else(|| anyhow::anyhow!("missing signing secret"))?;
+    Ok(format!(
+        "{}/verify/source?repo={repository_id}&type={}&number={number}&user_id={github_user_id}&login={}&url={}&sig={sig}",
+        state.config.web_base_url.trim_end_matches('/'),
+        urlencoding::encode(subject_type),
+        urlencoding::encode(login),
+        urlencoding::encode(subject_url)
+    ))
 }

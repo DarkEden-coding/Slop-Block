@@ -7,12 +7,8 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use captcha::{CaptchaProvider, PROVIDER_DEV_BYPASS};
 use github::{CheckRunRequest, GitHubApi};
-use hmac::{Hmac, Mac};
 use policy::VerificationPolicy;
-use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -20,9 +16,12 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::captcha_config::{self, SessionCaptchaConfig};
+use crate::github_helpers::ensure_policy_labels;
+use crate::github_tokens::installation_token;
+use crate::web_util::{
+    constant_time_eq, find_cookie, random_state, sign_hmac_url_safe, sign_source_payload,
+};
 use crate::AppState;
-
-type HmacSha256 = Hmac<Sha256>;
 const OAUTH_COOKIE: &str = "gho_oauth_state";
 
 pub fn routes() -> Router<AppState> {
@@ -151,16 +150,7 @@ pub fn parse_state_cookie(value: &str, expected_state: &str, secret: &str) -> Op
 }
 
 fn sign_cookie(secret: &str, msg: &[u8]) -> Option<String> {
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).ok()?;
-    mac.update(msg);
-    Some(URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
-}
-
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    sign_hmac_url_safe(secret, msg)
 }
 
 fn session_oauth_verified(metadata: &serde_json::Value) -> bool {
@@ -229,12 +219,6 @@ fn verify_response(
         redirect_url: issue_or_pr_url,
         captcha: if oauth_verified { captcha } else { None },
     }
-}
-
-fn random_state() -> String {
-    let mut bytes = [0_u8; 32];
-    OsRng.fill_bytes(&mut bytes);
-    URL_SAFE_NO_PAD.encode(bytes)
 }
 
 async fn oauth_start(
@@ -413,16 +397,16 @@ async fn verify_from_source(
         .or(state.config.github_webhook_secret.as_ref())
         .ok_or(OAuthError::NotConfigured)?
         .clone();
-    let expected = {
-        let payload = format!(
-            "{}|{}|{}|{}|{}|{}",
-            q.repo, q.subject_type, q.number, q.user_id, q.login, q.url
-        );
-        let mut mac =
-            HmacSha256::new_from_slice(secret.as_bytes()).map_err(|_| OAuthError::NotConfigured)?;
-        mac.update(payload.as_bytes());
-        URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
-    };
+    let expected = sign_source_payload(
+        &secret,
+        q.repo,
+        &q.subject_type,
+        q.number,
+        q.user_id,
+        &q.login,
+        &q.url,
+    )
+    .ok_or(OAuthError::NotConfigured)?;
     if !constant_time_eq(expected.as_bytes(), q.sig.as_bytes()) {
         return Err(OAuthError::InvalidSession);
     }
@@ -444,9 +428,7 @@ async fn verify_from_source(
     db::upsert_github_user(pool, q.user_id, &q.login, None, json!({"login": q.login}))
         .await
         .map_err(OAuthError::Db)?;
-    let mut bytes = [0_u8; 32];
-    OsRng.fill_bytes(&mut bytes);
-    let token_plain = URL_SAFE_NO_PAD.encode(bytes);
+    let token_plain = random_state();
     let hash = token_hash(&token_plain);
     let session = db::create_verification_session(
         pool,
@@ -529,15 +511,10 @@ async fn post_captcha(
     {
         return Err(OAuthError::BadRequest);
     }
-    let cap = if state.config.turnstile_dev_bypass && provider_id == PROVIDER_DEV_BYPASS {
-        captcha::DevBypass::new(true)
-            .verify(&body.token, None)
-            .await?
-    } else {
-        let stored = db::get_app_setting(pool, captcha_config::SETTINGS_KEY).await?;
+    let stored = db::get_app_setting(pool, captcha_config::SETTINGS_KEY).await?;
+    let cap =
         captcha_config::verify_token(&state.config, stored.as_ref(), &provider_id, &body.token)
-            .await?
-    };
+            .await?;
     if !cap.success {
         return Err(OAuthError::CaptchaFailed);
     }
@@ -627,7 +604,10 @@ async fn finalize(state: &AppState, s: &db::VerificationSession) {
             )
             .await;
             handled.insert((subject_type.to_string(), issue_number));
-            tokio::time::sleep(std::time::Duration::from_secs(22)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(
+                crate::github_helpers::github_content_delay_seconds(),
+            ))
+            .await;
         }
 
         // A single successful verification trusts the GitHub user for the repository.
@@ -673,7 +653,10 @@ async fn finalize(state: &AppState, s: &db::VerificationSession) {
                     // 3 content-generating mutations (set labels, delete comment,
                     // update check run). Sleep 22s to stay just under GitHub's
                     // documented 500 content-generating requests/hour limit.
-                    tokio::time::sleep(std::time::Duration::from_secs(22)).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(
+                        crate::github_helpers::github_content_delay_seconds(),
+                    ))
+                    .await;
                 }
             }
         }
@@ -771,65 +754,6 @@ async fn apply_verified_state(
             }
         }
     }
-}
-
-async fn ensure_policy_labels(
-    client: &github::ReqwestGitHubClient,
-    token: &str,
-    repo: &db::GithubRepository,
-    policy: &policy::VerificationPolicy,
-) {
-    let labels = [
-        policy.apply_label.as_ref(),
-        policy.pending_label.as_ref(),
-        policy.verified_label.as_ref(),
-    ]
-    .into_iter()
-    .flatten();
-    for label in labels {
-        let (color, description) = match Some(label.as_str()) {
-            _ if policy.apply_label.as_ref() == Some(label) => {
-                ("d73a4a", Some("Human verification is required"))
-            }
-            _ if policy.pending_label.as_ref() == Some(label) => {
-                ("fbca04", Some("Human verification is pending"))
-            }
-            _ => ("0e8a16", Some("Human verification is complete")),
-        };
-        let _ = client
-            .create_label(token, &repo.owner, &repo.name, label, color, description)
-            .await;
-    }
-}
-
-async fn installation_token(state: &AppState, installation_id: u64) -> Result<String, OAuthError> {
-    let app_id = state
-        .config
-        .github_app_id
-        .as_ref()
-        .ok_or(OAuthError::NotConfigured)?;
-    let pk = state
-        .config
-        .github_private_key
-        .as_ref()
-        .ok_or(OAuthError::NotConfigured)?;
-    let jwt = github::create_app_jwt(app_id, pk).map_err(|_| OAuthError::NotConfigured)?;
-    let gh = github::ReqwestGitHubClient::with_base_url(&state.config.github_api_base);
-    Ok(gh
-        .exchange_installation_token(&jwt, installation_id)
-        .await
-        .map_err(|_| OAuthError::Upstream)?
-        .token)
-}
-
-fn find_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
-    headers
-        .get(header::COOKIE)?
-        .to_str()
-        .ok()?
-        .split(';')
-        .map(str::trim)
-        .find_map(|c| c.strip_prefix(&format!("{name}=")).map(ToOwned::to_owned))
 }
 
 fn redirect_verify(

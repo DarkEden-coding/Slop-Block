@@ -12,7 +12,6 @@ const boolFields = [
   ["comment_on_required", "Post verification comment", "Adds or updates the GitHub issue/PR comment with the verification link."],
   ["exempt_collaborators", "Exempt collaborators", "Users with write/maintain/admin access bypass verification."],
   ["exempt_verified_bots", "Exempt verified bots/apps", "Bot and GitHub App actors bypass verification."],
-  ["close_unverified", "Close unverified contributions", "Only applies in enforce mode."],
 ] as const satisfies readonly (readonly [keyof RepoPolicy, string, string])[];
 
 const labelFields = [

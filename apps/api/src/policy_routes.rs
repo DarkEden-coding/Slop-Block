@@ -9,7 +9,7 @@ use policy::VerificationPolicy;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{AppState, ErrorBody, ErrorDetail};
+use crate::{admin_auth, AppState, ErrorBody, ErrorDetail};
 use github::GitHubApi;
 
 pub fn router() -> Router<AppState> {
@@ -52,7 +52,6 @@ pub struct InstallationResponse {
     pub account_login: String,
     pub account_id: Option<i64>,
     pub account_type: Option<String>,
-    pub install_url: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -126,7 +125,7 @@ async fn list_installations(
     headers: HeaderMap,
 ) -> Result<Json<Vec<InstallationResponse>>, PolicyRouteError> {
     let pool = state.db.as_ref().ok_or(PolicyRouteError::NoDb)?;
-    let installations = if crate::admin_auth::bearer_is_authorized(&state, &headers) {
+    let installations = if admin_auth::bearer_authorized(&state, &headers) {
         sqlx::query_as::<_, db::GithubInstallation>(
             "SELECT * FROM github_installations WHERE deleted_at IS NULL ORDER BY account_login",
         )
@@ -155,7 +154,7 @@ async fn list_repositories(
     headers: HeaderMap,
 ) -> Result<Json<Vec<RepositorySummary>>, PolicyRouteError> {
     let pool = state.db.as_ref().ok_or(PolicyRouteError::NoDb)?;
-    let repositories = if crate::admin_auth::bearer_is_authorized(&state, &headers) {
+    let repositories = if admin_auth::bearer_authorized(&state, &headers) {
         sqlx::query_as::<_, db::GithubRepository>(
             "SELECT * FROM github_repositories WHERE active=true ORDER BY full_name",
         )
@@ -208,7 +207,7 @@ async fn sync_installation(
     ensure_mutation_allowed(&state, &headers)?;
     ensure_installation_access(&state, &headers, installation_id).await?;
     let pool = state.db.as_ref().ok_or(PolicyRouteError::NoDb)?;
-    let token = installation_token(&state, installation_id as u64).await?;
+    let token = policy_installation_token(&state, installation_id as u64).await?;
     let client = github::ReqwestGitHubClient::with_base_url(&state.config.github_api_base);
     let repos = client
         .installation_repositories(&token)
@@ -401,7 +400,7 @@ async fn cancel_backfill(
 }
 
 fn ensure_mutation_allowed(state: &AppState, headers: &HeaderMap) -> Result<(), PolicyRouteError> {
-    if crate::admin_auth::bearer_is_authorized(state, headers)
+    if admin_auth::bearer_authorized(state, headers)
         || (crate::admin_auth::current_admin_user(state, headers).is_some()
             && crate::admin_auth::mutation_header_present(headers))
     {
@@ -416,7 +415,7 @@ async fn ensure_installation_access(
     headers: &HeaderMap,
     installation_id: i64,
 ) -> Result<(), PolicyRouteError> {
-    if crate::admin_auth::bearer_is_authorized(state, headers) {
+    if admin_auth::bearer_authorized(state, headers) {
         return Ok(());
     }
     let pool = state.db.as_ref().ok_or(PolicyRouteError::NoDb)?;
@@ -436,7 +435,7 @@ async fn find_repo_for_headers(
     repo_id: i64,
 ) -> Result<db::GithubRepository, PolicyRouteError> {
     let repo = find_repo(pool, repo_id).await?;
-    if crate::admin_auth::bearer_is_authorized(state, headers) {
+    if admin_auth::bearer_authorized(state, headers) {
         return Ok(repo);
     }
     let user = crate::admin_auth::current_admin_user(state, headers)
@@ -448,28 +447,20 @@ async fn find_repo_for_headers(
     }
 }
 
-async fn installation_token(
+async fn policy_installation_token(
     state: &AppState,
     installation_id: u64,
 ) -> Result<String, PolicyRouteError> {
-    let app_id = state
-        .config
-        .github_app_id
-        .as_ref()
-        .ok_or(PolicyRouteError::GitHubNotConfigured)?;
-    let pk = state
-        .config
-        .github_private_key
-        .as_ref()
-        .ok_or(PolicyRouteError::GitHubNotConfigured)?;
-    let jwt =
-        github::create_app_jwt(app_id, pk).map_err(|_| PolicyRouteError::GitHubNotConfigured)?;
-    let gh = github::ReqwestGitHubClient::with_base_url(&state.config.github_api_base);
-    Ok(gh
-        .exchange_installation_token(&jwt, installation_id)
+    if state.config.github_app_id.is_none() || state.config.github_private_key.is_none() {
+        return Err(PolicyRouteError::GitHubNotConfigured);
+    }
+    crate::github_tokens::installation_token(state, installation_id)
         .await
-        .map_err(PolicyRouteError::GitHub)?
-        .token)
+        .map_err(|err| {
+            err.downcast::<github::GitHubError>()
+                .map(PolicyRouteError::GitHub)
+                .unwrap_or(PolicyRouteError::GitHubNotConfigured)
+        })
 }
 
 async fn verify_user_installation_access(
@@ -548,7 +539,6 @@ impl From<db::GithubInstallation> for InstallationResponse {
             account_login: installation.account_login,
             account_id: installation.account_id,
             account_type: installation.account_type,
-            install_url: None,
         }
     }
 }
