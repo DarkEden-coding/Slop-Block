@@ -134,6 +134,13 @@ pub async fn process_subject(
     db::insert_audit(pool, Some(&work.source), "github.subject.decision", Some(repo.repository_id), Some(&work.subject_type), Some(&work.number.to_string()), json!({"reason": decision.reason, "required": decision.required, "allowed": decision.allowed})).await?;
 
     if !decision.required {
+        if work.source == "backfill" {
+            return Ok(SubjectOutcome {
+                required: false,
+                reason: format!("{:?}", decision.reason),
+                skipped: true,
+            });
+        }
         for action in &decision.actions {
             match action {
                 policy::PolicyAction::AddLabel(label) => {
@@ -160,6 +167,37 @@ pub async fn process_subject(
             reason: format!("{:?}", decision.reason),
             skipped: false,
         });
+    }
+
+    if work.source == "backfill" && !work.force_new_comment {
+        let has_comment = !policy.comment_on_required
+            || db::get_bot_artifact(
+                pool,
+                repo.repository_id,
+                &work.subject_type,
+                &work.number.to_string(),
+                "comment",
+            )
+            .await?
+            .is_some();
+        let has_check = target != policy::TargetKind::PullRequest
+            || policy.check_mode == policy::CheckMode::Off
+            || db::get_bot_artifact(
+                pool,
+                repo.repository_id,
+                &work.subject_type,
+                &work.number.to_string(),
+                "check_run",
+            )
+            .await?
+            .is_some();
+        if has_comment && has_check {
+            return Ok(SubjectOutcome {
+                required: true,
+                reason: format!("{:?}", decision.reason),
+                skipped: true,
+            });
+        }
     }
 
     db::upsert_github_user(
