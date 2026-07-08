@@ -200,11 +200,7 @@ async fn enqueue_item(
     // a required PR backfill now creates at most 3 content-generating requests:
     // labels + comment + check run. The hourly limit is tighter:
     // ceil(3600 / (500 / 3)) = 22 seconds per item.
-    let delay_seconds = std::env::var("BACKFILL_SUBJECT_DELAY_SECONDS")
-        .ok()
-        .and_then(|v| v.parse::<i64>().ok())
-        .unwrap_or(22)
-        .max(1);
+    let delay_seconds = backfill_subject_delay_seconds();
     let run_at = OffsetDateTime::now_utc()
         + Duration::from_secs((i64::from(sequence) * delay_seconds) as u64);
     jobs::enqueue_deduped(
@@ -279,7 +275,10 @@ async fn handle_backfill_subject(
             )
             .await?;
             if outcome.skipped {
-                accelerate_next_backfill_item(pool, run.id).await?;
+                accelerate_next_backfill_item(pool, run.id, 0).await?;
+            } else {
+                accelerate_next_backfill_item(pool, run.id, backfill_subject_delay_seconds())
+                    .await?;
             }
             Ok(())
         }
@@ -299,14 +298,29 @@ async fn handle_backfill_subject(
     }
 }
 
-async fn accelerate_next_backfill_item(pool: &PgPool, run_id: i64) -> anyhow::Result<()> {
-    // Backfill items are normally spaced out to stay near GitHub's content-creation
-    // secondary limit. Skipped items do not perform content mutations, so pull the
-    // next queued item for this run forward immediately instead of burning a delay slot.
+fn backfill_subject_delay_seconds() -> i64 {
+    std::env::var("BACKFILL_SUBJECT_DELAY_SECONDS")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(22)
+        .max(1)
+}
+
+async fn accelerate_next_backfill_item(
+    pool: &PgPool,
+    run_id: i64,
+    delay_seconds: i64,
+) -> anyhow::Result<()> {
+    // Backfill items are initially spread across the whole run, but many can later
+    // skip without using content quota. After each item, reschedule only the next
+    // queued item relative to *now*: immediately after skips, or one mutation
+    // interval after real GitHub content changes. This prevents old skipped slots
+    // from making the run wait minutes/hours after the first successful mutation.
     sqlx::query(
         r#"
         UPDATE jobs
-        SET run_at = now(), updated_at = now()
+        SET run_at = now() + ($2::text || ' seconds')::interval,
+            updated_at = now()
         WHERE id = (
             SELECT id
             FROM jobs
@@ -319,6 +333,7 @@ async fn accelerate_next_backfill_item(pool: &PgPool, run_id: i64) -> anyhow::Re
         "#,
     )
     .bind(run_id)
+    .bind(delay_seconds)
     .execute(pool)
     .await?;
     Ok(())
