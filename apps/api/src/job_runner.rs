@@ -1,4 +1,5 @@
 use std::time::Duration;
+use time::OffsetDateTime;
 
 use crate::{
     github_subjects::{process_subject, SubjectWork},
@@ -135,7 +136,7 @@ async fn handle_backfill_scan(
             )
             .await?
             {
-                enqueue_item(pool, run.id, item.id).await?;
+                enqueue_item(pool, run.id, item.id, enqueued).await?;
                 enqueued += 1;
             }
         }
@@ -161,7 +162,7 @@ async fn handle_backfill_scan(
             )
             .await?
             {
-                enqueue_item(pool, run.id, item.id).await?;
+                enqueue_item(pool, run.id, item.id, enqueued).await?;
                 enqueued += 1;
             }
         }
@@ -186,14 +187,30 @@ async fn handle_backfill_scan(
     Ok(())
 }
 
-async fn enqueue_item(pool: &PgPool, run_id: i64, item_id: i64) -> anyhow::Result<()> {
+async fn enqueue_item(
+    pool: &PgPool,
+    run_id: i64,
+    item_id: i64,
+    sequence: i32,
+) -> anyhow::Result<()> {
     let payload = json!({"backfill_run_id": run_id, "backfill_item_id": item_id});
     let key = format!("backfill:{run_id}:item:{item_id}");
+    // GitHub documents a general secondary content-creation limit of
+    // 500 content-generating requests/hour. A required PR backfill can create
+    // up to 4 content requests (2 label adds + 1 comment + 1 check run), so
+    // schedule at floor(3600 / (500 / 4)) = 28.8s, rounded up to 29s.
+    let delay_seconds = std::env::var("BACKFILL_SUBJECT_DELAY_SECONDS")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(29)
+        .max(1);
+    let run_at = OffsetDateTime::now_utc()
+        + Duration::from_secs((i64::from(sequence) * delay_seconds) as u64);
     jobs::enqueue_deduped(
         pool,
         JobKind::BackfillSubject,
         payload,
-        None,
+        Some(run_at),
         8,
         Some(&key),
         50,
@@ -263,16 +280,16 @@ async fn handle_backfill_subject(
             Ok(())
         }
         Err(err) => {
-            db::finish_backfill_item(
-                pool,
-                run.id,
-                item.id,
-                "failed",
-                None,
-                None,
-                Some(&err.to_string()),
-            )
-            .await?;
+            let error = err.to_string();
+            if error.contains("secondary rate limited")
+                || error.contains("temporarily blocked from content creation")
+            {
+                // Do not permanently fail the backfill item when GitHub asks us to slow down.
+                // Let the jobs runner retry with exponential backoff instead.
+                return Err(err);
+            }
+            db::finish_backfill_item(pool, run.id, item.id, "failed", None, None, Some(&error))
+                .await?;
             Ok(())
         }
     }
