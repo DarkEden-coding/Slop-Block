@@ -278,6 +278,9 @@ async fn handle_backfill_subject(
                 None,
             )
             .await?;
+            if outcome.skipped {
+                accelerate_next_backfill_item(pool, run.id).await?;
+            }
             Ok(())
         }
         Err(err) => {
@@ -294,6 +297,31 @@ async fn handle_backfill_subject(
             Ok(())
         }
     }
+}
+
+async fn accelerate_next_backfill_item(pool: &PgPool, run_id: i64) -> anyhow::Result<()> {
+    // Backfill items are normally spaced out to stay near GitHub's content-creation
+    // secondary limit. Skipped items do not perform content mutations, so pull the
+    // next queued item for this run forward immediately instead of burning a delay slot.
+    sqlx::query(
+        r#"
+        UPDATE jobs
+        SET run_at = now(), updated_at = now()
+        WHERE id = (
+            SELECT id
+            FROM jobs
+            WHERE kind = 'backfill_subject'
+              AND status = 'queued'
+              AND (payload->>'backfill_run_id')::bigint = $1
+            ORDER BY run_at, id
+            LIMIT 1
+        )
+        "#,
+    )
+    .bind(run_id)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 #[allow(dead_code)]
