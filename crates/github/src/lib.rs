@@ -268,6 +268,15 @@ pub trait GitHubApi: Send + Sync {
         issue_number: u64,
         labels: &[String],
     ) -> Result<Vec<Label>, GitHubError>;
+    async fn create_label(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        name: &str,
+        color: &str,
+        description: Option<&str>,
+    ) -> Result<Label, GitHubError>;
     async fn remove_label(
         &self,
         token: &str,
@@ -577,6 +586,26 @@ impl GitHubApi for ReqwestGitHubClient {
         )
         .await
     }
+    async fn create_label(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        name: &str,
+        color: &str,
+        description: Option<&str>,
+    ) -> Result<Label, GitHubError> {
+        self.send_json(
+            self.authed(
+                reqwest::Method::POST,
+                &Self::repo_path(owner, repo, "/labels"),
+                token,
+            )
+            .json(&serde_json::json!({"name": name, "color": color, "description": description})),
+        )
+        .await
+    }
+
     async fn remove_label(
         &self,
         token: &str,

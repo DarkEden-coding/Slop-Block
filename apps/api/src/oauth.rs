@@ -713,9 +713,17 @@ async fn apply_verified_state(
             next_labels.push(label.clone());
         }
     }
-    let _ = client
+    if let Err(err) = client
         .set_labels(token, &repo.owner, &repo.name, issue_number, &next_labels)
-        .await;
+        .await
+    {
+        if matches!(err, github::GitHubError::ApiStatus(status) if status.as_u16() == 404) {
+            ensure_policy_labels(client, token, repo, policy).await;
+            let _ = client
+                .set_labels(token, &repo.owner, &repo.name, issue_number, &next_labels)
+                .await;
+        }
+    }
     if let Ok(Some(artifact)) = db::get_bot_artifact(
         pool,
         repo.repository_id,
@@ -762,6 +770,35 @@ async fn apply_verified_state(
                 }
             }
         }
+    }
+}
+
+async fn ensure_policy_labels(
+    client: &github::ReqwestGitHubClient,
+    token: &str,
+    repo: &db::GithubRepository,
+    policy: &policy::VerificationPolicy,
+) {
+    let labels = [
+        policy.apply_label.as_ref(),
+        policy.pending_label.as_ref(),
+        policy.verified_label.as_ref(),
+    ]
+    .into_iter()
+    .flatten();
+    for label in labels {
+        let (color, description) = match Some(label.as_str()) {
+            _ if policy.apply_label.as_ref() == Some(label) => {
+                ("d73a4a", Some("Human verification is required"))
+            }
+            _ if policy.pending_label.as_ref() == Some(label) => {
+                ("fbca04", Some("Human verification is pending"))
+            }
+            _ => ("0e8a16", Some("Human verification is complete")),
+        };
+        let _ = client
+            .create_label(token, &repo.owner, &repo.name, label, color, description)
+            .await;
     }
 }
 
