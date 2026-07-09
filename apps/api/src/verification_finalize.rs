@@ -1,11 +1,15 @@
 use std::collections::HashSet;
+use std::time::Duration;
 
 use github::{CheckRunRequest, GitHubApi};
 use policy::VerificationPolicy;
+use serde::Deserialize;
 use serde_json::json;
+use time::OffsetDateTime;
+use uuid::Uuid;
 
 use crate::github_helpers::{ensure_policy_labels, github_content_delay_seconds};
-use crate::github_tokens::installation_token;
+use crate::github_tokens::{github_client, installation_token};
 use crate::AppState;
 
 pub async fn load_repo_policy(pool: &db::PgPool, repository_id: i64) -> VerificationPolicy {
@@ -43,161 +47,242 @@ pub async fn record_verification_trust(state: &AppState, s: &db::VerificationSes
     .await;
 }
 
-pub async fn propagate_verified_github_state(state: &AppState, s: &db::VerificationSession) {
+pub async fn enqueue_propagation(state: &AppState, s: &db::VerificationSession) {
     let Some(pool) = state.db.as_ref() else {
         return;
     };
-    let Ok(Some(repo)) = db::get_repository(pool, s.repository_id).await else {
-        return;
+    let payload = json!({
+        "session_public_id": s.public_id,
+        "repository_id": s.repository_id,
+    });
+    let key = format!("propagation:session:{}", s.public_id);
+    let _ = jobs::enqueue_deduped(
+        pool,
+        jobs::JobKind::PropagationPlan,
+        payload,
+        None,
+        8,
+        Some(&key),
+        30,
+    )
+    .await;
+}
+
+#[derive(Deserialize)]
+struct PropagationPlanPayload {
+    session_public_id: Uuid,
+    repository_id: i64,
+}
+
+#[derive(Deserialize)]
+struct PropagationSubjectPayload {
+    propagation_run_id: i64,
+    repository_id: i64,
+    subject_type: String,
+    number: u64,
+    head_sha: Option<String>,
+    label_names: Option<Vec<String>>,
+}
+
+pub async fn handle_propagation_plan(
+    state: &AppState,
+    pool: &db::PgPool,
+    payload: serde_json::Value,
+) -> anyhow::Result<()> {
+    let p: PropagationPlanPayload = serde_json::from_value(payload)?;
+    let session = db::get_verification_session_by_public_id(pool, p.session_public_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("verification session not found"))?;
+
+    let repo = db::get_repository(pool, p.repository_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("repository not found"))?;
+    let policy: VerificationPolicy = match db::get_policy(pool, repo.repository_id).await? {
+        Some(pol) if pol.enabled => serde_json::from_value(pol.policy).unwrap_or_default(),
+        Some(_) => return Ok(()),
+        None => VerificationPolicy::default(),
     };
-    let p: VerificationPolicy = match db::get_policy(pool, repo.repository_id).await {
-        Ok(Some(pol)) if pol.enabled => serde_json::from_value(pol.policy).unwrap_or_default(),
-        Ok(Some(_)) => return,
-        _ => VerificationPolicy::default(),
-    };
-    let login = s
+    let _ = policy;
+    let login = session
         .metadata
         .get("login")
         .and_then(|v| v.as_str())
-        .unwrap_or(&s.subject_id);
-    let propagation_run = db::create_propagation_run(
+        .unwrap_or(&session.subject_id);
+    let run = db::create_propagation_run(
         pool,
-        s.repository_id,
-        s.github_user_id,
+        session.repository_id,
+        session.github_user_id,
         Some(login),
-        s.public_id,
+        session.public_id,
     )
-    .await
-    .ok();
-    let token = installation_token(state, repo.installation_id as u64)
-        .await
-        .ok();
-    if let Some(token) = token {
-        let client = github::ReqwestGitHubClient::with_base_url(&state.config.github_api_base);
-        let mut sessions = vec![s.clone()];
-        if let Some(user_id) = s.github_user_id {
-            if let Ok(done) =
-                db::complete_pending_sessions_for_user(pool, s.repository_id, user_id).await
-            {
-                sessions.extend(done.into_iter().filter(|session| session.id != s.id));
-            }
-        }
-        let mut handled = HashSet::new();
-        let mut planned_total = sessions.len() as i32;
-        for session in sessions {
-            let issue_number = session.subject_id.parse().unwrap_or(0);
-            let subject_type = session.subject_type.as_str();
-            apply_verified_state(
-                pool,
-                &client,
-                &token,
-                &repo,
-                &p,
-                subject_type,
-                issue_number,
-                None,
-                None,
-            )
-            .await;
-            handled.insert((subject_type.to_string(), issue_number));
-            if let Some(run) = propagation_run.as_ref() {
-                let _ = db::advance_propagation_progress(
-                    pool,
-                    run.id,
-                    subject_type,
-                    &issue_number.to_string(),
-                )
-                .await;
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(
-                github_content_delay_seconds(),
-            ))
-            .await;
-        }
+    .await?;
 
-        if let Some(run) = propagation_run.as_ref() {
-            let _ = db::set_propagation_total(pool, run.id, planned_total).await;
+    let mut sessions = vec![session.clone()];
+    if let Some(user_id) = session.github_user_id {
+        if let Ok(done) =
+            db::complete_pending_sessions_for_user(pool, session.repository_id, user_id).await
+        {
+            sessions.extend(done.into_iter().filter(|s| s.id != session.id));
         }
-
-        if let Some(user_id) = s.github_user_id {
-            if let Ok(open_items) = client
-                .list_open_issues(&token, &repo.owner, &repo.name)
-                .await
-            {
-                let additional = open_items
-                    .iter()
-                    .filter(|issue| issue.user.id as i64 == user_id)
-                    .filter(|issue| {
-                        let subject_type = if issue.pull_request.is_some() {
-                            "pull_request"
-                        } else {
-                            "issue"
-                        };
-                        !handled.contains(&(subject_type.to_string(), issue.number))
-                    })
-                    .count() as i32;
-                planned_total += additional;
-                if let Some(run) = propagation_run.as_ref() {
-                    let _ = db::set_propagation_total(pool, run.id, planned_total).await;
-                }
-                for issue in open_items {
-                    if issue.user.id as i64 != user_id {
-                        continue;
-                    }
-                    let subject_type = if issue.pull_request.is_some() {
-                        "pull_request"
-                    } else {
-                        "issue"
-                    };
-                    if handled.contains(&(subject_type.to_string(), issue.number)) {
-                        continue;
-                    }
-                    apply_verified_state(
-                        pool,
-                        &client,
-                        &token,
-                        &repo,
-                        &p,
-                        subject_type,
-                        issue.number,
-                        None,
-                        Some(
-                            issue
-                                .labels
-                                .iter()
-                                .map(|label| label.name.clone())
-                                .collect(),
-                        ),
-                    )
-                    .await;
-                    handled.insert((subject_type.to_string(), issue.number));
-                    if let Some(run) = propagation_run.as_ref() {
-                        let _ = db::advance_propagation_progress(
-                            pool,
-                            run.id,
-                            subject_type,
-                            &issue.number.to_string(),
-                        )
-                        .await;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_secs(
-                        github_content_delay_seconds(),
-                    ))
-                    .await;
-                }
-            }
-        }
-        if let Some(run) = propagation_run.as_ref() {
-            let _ = db::complete_propagation_run(pool, run.id).await;
-        }
-    } else if let Some(run) = propagation_run.as_ref() {
-        let _ = db::fail_propagation_run(pool, run.id, "installation token unavailable").await;
     }
+
+    let mut handled = HashSet::new();
+    let mut sequence = 0i32;
+    for s in &sessions {
+        let number = s.subject_id.parse().unwrap_or(0);
+        let subject_type = s.subject_type.clone();
+        handled.insert((subject_type.clone(), number));
+        enqueue_propagation_subject(
+            state,
+            pool,
+            run.id,
+            repo.repository_id,
+            &subject_type,
+            number,
+            None,
+            None,
+            sequence,
+        )
+        .await?;
+        sequence += 1;
+    }
+
+    if let Some(user_id) = session.github_user_id {
+        let _permit = state
+            .installation_gate
+            .acquire(repo.installation_id as u64)
+            .await;
+        let token = installation_token(state, repo.installation_id as u64).await?;
+        let client = github_client(state);
+        let open_items = client
+            .list_open_issues_by_creator(&token, &repo.owner, &repo.name, login)
+            .await?;
+        for issue in open_items {
+            if issue.user.id as i64 != user_id {
+                continue;
+            }
+            let subject_type = if issue.pull_request.is_some() {
+                "pull_request"
+            } else {
+                "issue"
+            };
+            if handled.contains(&(subject_type.to_string(), issue.number)) {
+                continue;
+            }
+            handled.insert((subject_type.to_string(), issue.number));
+            let labels = issue.labels.iter().map(|l| l.name.clone()).collect();
+            enqueue_propagation_subject(
+                state,
+                pool,
+                run.id,
+                repo.repository_id,
+                subject_type,
+                issue.number,
+                None,
+                Some(labels),
+                sequence,
+            )
+            .await?;
+            sequence += 1;
+        }
+    }
+
+    db::set_propagation_total(pool, run.id, sequence).await?;
+    if sequence == 0 {
+        db::complete_propagation_run(pool, run.id).await?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn enqueue_propagation_subject(
+    state: &AppState,
+    pool: &db::PgPool,
+    run_id: i64,
+    repository_id: i64,
+    subject_type: &str,
+    number: u64,
+    head_sha: Option<&str>,
+    label_names: Option<Vec<String>>,
+    sequence: i32,
+) -> anyhow::Result<()> {
+    let payload = json!({
+        "propagation_run_id": run_id,
+        "repository_id": repository_id,
+        "subject_type": subject_type,
+        "number": number,
+        "head_sha": head_sha,
+        "label_names": label_names,
+    });
+    let key = format!("propagation:{run_id}:{subject_type}:{number}");
+    let delay = github_content_delay_seconds(state) as i64;
+    let run_at =
+        OffsetDateTime::now_utc() + Duration::from_secs((i64::from(sequence) * delay) as u64);
+    jobs::enqueue_deduped(
+        pool,
+        jobs::JobKind::PropagationSubject,
+        payload,
+        Some(run_at),
+        8,
+        Some(&key),
+        35,
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn handle_propagation_subject(
+    state: &AppState,
+    pool: &db::PgPool,
+    payload: serde_json::Value,
+) -> anyhow::Result<()> {
+    let p: PropagationSubjectPayload = serde_json::from_value(payload)?;
+    let repo = db::get_repository(pool, p.repository_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("repository not found"))?;
+    let policy = load_repo_policy(pool, repo.repository_id).await;
+    let _permit = state
+        .installation_gate
+        .acquire(repo.installation_id as u64)
+        .await;
+    let token = installation_token(state, repo.installation_id as u64).await?;
+    let client = github_client(state);
+    apply_verified_state(
+        pool,
+        &client,
+        &token,
+        &repo,
+        &policy,
+        &p.subject_type,
+        p.number,
+        p.head_sha.as_deref(),
+        p.label_names,
+    )
+    .await;
+    db::advance_propagation_progress(
+        pool,
+        p.propagation_run_id,
+        &p.subject_type,
+        &p.number.to_string(),
+    )
+    .await?;
+
+    let remaining: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM jobs WHERE status IN ('queued','running') AND kind='propagation_subject' AND (payload->>'propagation_run_id')::bigint=$1",
+    )
+    .bind(p.propagation_run_id)
+    .fetch_one(pool)
+    .await?;
+    // Current job is still running until the runner marks it complete; count of 1 means we are last.
+    if remaining.0 <= 1 {
+        db::complete_propagation_run(pool, p.propagation_run_id).await?;
+    }
+    Ok(())
 }
 
 pub async fn finalize(state: &AppState, s: &db::VerificationSession) {
     record_verification_trust(state, s).await;
-    propagate_verified_github_state(state, s).await;
+    enqueue_propagation(state, s).await;
 }
 
 #[allow(clippy::too_many_arguments)]

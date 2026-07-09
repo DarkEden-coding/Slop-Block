@@ -1,36 +1,44 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::HeaderMap,
     Json,
 };
 use github::GitHubApi;
+use serde::Deserialize;
+use serde_json::json;
 
-use super::guards::{
-    ensure_installation_access, ensure_mutation_allowed, policy_installation_token,
-};
+use super::guards::{ensure_installation_access, ensure_mutation_allowed};
 use super::{InstallationResponse, PolicyRouteError, RepositorySummary};
-use crate::{admin_auth, github_helpers::sync_user_installations, AppState};
+use crate::{
+    admin_auth, github_helpers::sync_user_installations_filtered, github_tokens::github_client,
+    AppState,
+};
+
+#[derive(Debug, Deserialize)]
+pub struct ListQuery {
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub offset: Option<i64>,
+}
 
 pub(super) async fn list_installations(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<InstallationResponse>>, PolicyRouteError> {
     let pool = state.db.as_ref().ok_or(PolicyRouteError::NoDb)?;
+    let limit = query
+        .limit
+        .unwrap_or(state.config.dashboard_list_page_size)
+        .clamp(1, 500);
+    let offset = query.offset.unwrap_or(0).max(0);
     let installations = if admin_auth::bearer_authorized(&state, &headers) {
-        sqlx::query_as::<_, db::GithubInstallation>(
-            "SELECT * FROM github_installations WHERE deleted_at IS NULL ORDER BY account_login",
-        )
-        .fetch_all(pool)
-        .await?
+        db::list_installations_page(pool, limit, offset).await?
     } else {
         let user = admin_auth::current_admin_user(&state, &headers)
             .ok_or(PolicyRouteError::Unauthorized)?;
-        sqlx::query_as::<_, db::GithubInstallation>(
-            "SELECT i.* FROM github_installations i JOIN installation_admins a ON a.installation_id=i.installation_id WHERE a.github_user_id=$1 AND i.deleted_at IS NULL ORDER BY i.account_login",
-        )
-        .bind(user.id as i64)
-        .fetch_all(pool)
-        .await?
+        db::list_user_installations_page(pool, user.id as i64, limit, offset).await?
     };
     Ok(Json(
         installations
@@ -61,43 +69,48 @@ pub(super) async fn claim_installation(
     Ok(Json(InstallationResponse::from(installation)))
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct SyncInstallationResponse {
+    pub status: &'static str,
+    pub installation_id: i64,
+    pub repositories: Vec<RepositorySummary>,
+}
+
 pub(super) async fn sync_installation(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(installation_id): Path<i64>,
-) -> Result<Json<Vec<RepositorySummary>>, PolicyRouteError> {
+    Query(query): Query<ListQuery>,
+) -> Result<Json<SyncInstallationResponse>, PolicyRouteError> {
     ensure_mutation_allowed(&state, &headers)?;
     ensure_installation_access(&state, &headers, installation_id).await?;
     let pool = state.db.as_ref().ok_or(PolicyRouteError::NoDb)?;
-    let token = policy_installation_token(&state, installation_id as u64).await?;
-    let client = github::ReqwestGitHubClient::with_base_url(&state.config.github_api_base);
-    let repos = client
-        .installation_repositories(&token)
-        .await
-        .map_err(PolicyRouteError::GitHub)?;
-    for repo in repos {
-        let owner = repo.owner.login;
-        let name = repo.name;
-        db::upsert_repository(
-            pool,
-            repo.id as i64,
-            installation_id,
-            &owner,
-            &name,
-            &repo.full_name,
-            repo.private,
-            repo.default_branch.as_deref(),
-            serde_json::json!({}),
-        )
-        .await?;
-    }
-    let repositories = db::list_repositories(pool, installation_id).await?;
-    Ok(Json(
-        repositories
+    let payload = json!({ "installation_id": installation_id });
+    let key = format!("sync:installation:{installation_id}");
+    jobs::enqueue_deduped(
+        pool,
+        jobs::JobKind::SyncInstallation,
+        payload,
+        None,
+        8,
+        Some(&key),
+        20,
+    )
+    .await?;
+    let limit = query
+        .limit
+        .unwrap_or(state.config.dashboard_list_page_size)
+        .clamp(1, 500);
+    let offset = query.offset.unwrap_or(0).max(0);
+    let repositories = db::list_repositories_page(pool, installation_id, limit, offset).await?;
+    Ok(Json(SyncInstallationResponse {
+        status: "accepted",
+        installation_id,
+        repositories: repositories
             .into_iter()
             .map(RepositorySummary::from)
             .collect(),
-    ))
+    }))
 }
 
 async fn verify_user_installation_access(
@@ -112,17 +125,18 @@ async fn verify_user_installation_access(
         .ok_or(PolicyRouteError::ReauthRequired)?;
     let token = crate::secret_box::decrypt_field(&state.config, &stored.access_token_encrypted)
         .ok_or(PolicyRouteError::ReauthRequired)?;
-    let gh = github::ReqwestGitHubClient::with_base_url(&state.config.github_api_base);
+    let gh = github_client(state);
     let installations = gh
         .user_installations(&token)
         .await
         .map_err(PolicyRouteError::GitHub)?;
-    sync_user_installations(
+    sync_user_installations_filtered(
         pool,
         &installations,
         github_user_id,
         login,
         "verified_claim",
+        Some(installation_id),
     )
     .await?;
     if installations

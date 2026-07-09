@@ -20,10 +20,17 @@ export function InstallCompleteClient({ installationId, setupAction }: { install
         setStatus("Claiming installation…");
         await apiFetch(`/api/installations/${encodeURIComponent(installationId)}/claim`, { method: "POST" });
         setStatus("Syncing repositories…");
-        const synced = await apiFetch<Repo[]>(`/api/installations/${encodeURIComponent(installationId)}/sync`, { method: "POST" });
+        const synced = await apiFetch<{ status: string; repositories: Repo[] }>(
+          `/api/installations/${encodeURIComponent(installationId)}/sync`,
+          { method: "POST" },
+        );
         if (!cancelled) {
-          setRepos(synced);
-          setStatus("Setup is ready.");
+          setRepos(synced.repositories ?? []);
+          setStatus(
+            synced.status === "accepted"
+              ? "Repository sync started. Opening dashboard…"
+              : "Setup is ready.",
+          );
         }
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));

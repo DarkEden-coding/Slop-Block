@@ -1,9 +1,10 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     Json,
 };
 use policy::VerificationPolicy;
+use serde::Deserialize;
 
 use super::guards::{ensure_mutation_allowed, find_repo_for_headers, list_trusted_users};
 use super::{
@@ -12,26 +13,31 @@ use super::{
 };
 use crate::{admin_auth, AppState};
 
+#[derive(Debug, Deserialize)]
+pub struct ListQuery {
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub offset: Option<i64>,
+}
+
 pub(super) async fn list_repositories(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<RepositorySummary>>, PolicyRouteError> {
     let pool = state.db.as_ref().ok_or(PolicyRouteError::NoDb)?;
+    let limit = query
+        .limit
+        .unwrap_or(state.config.dashboard_list_page_size)
+        .clamp(1, 500);
+    let offset = query.offset.unwrap_or(0).max(0);
     let repositories = if admin_auth::bearer_authorized(&state, &headers) {
-        sqlx::query_as::<_, db::GithubRepository>(
-            "SELECT * FROM github_repositories WHERE active=true ORDER BY full_name",
-        )
-        .fetch_all(pool)
-        .await?
+        db::list_repositories_for_user_page(pool, None, limit, offset).await?
     } else {
         let user = admin_auth::current_admin_user(&state, &headers)
             .ok_or(PolicyRouteError::Unauthorized)?;
-        sqlx::query_as::<_, db::GithubRepository>(
-            "SELECT r.* FROM github_repositories r JOIN installation_admins a ON a.installation_id=r.installation_id WHERE a.github_user_id=$1 AND r.active=true ORDER BY r.full_name",
-        )
-        .bind(user.id as i64)
-        .fetch_all(pool)
-        .await?
+        db::list_repositories_for_user_page(pool, Some(user.id as i64), limit, offset).await?
     };
     Ok(Json(
         repositories

@@ -7,6 +7,7 @@ pub mod error;
 pub mod github_helpers;
 pub mod github_subjects;
 pub mod github_tokens;
+pub mod installation_gate;
 pub mod job_runner;
 pub mod oauth;
 pub mod oauth_state;
@@ -39,6 +40,8 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub db: Option<PgPool>,
     pub rate_limiter: Arc<rate_limit::RateLimiter>,
+    pub token_cache: github_tokens::SharedTokenCache,
+    pub installation_gate: installation_gate::SharedInstallationGate,
 }
 
 const RATE_LIMIT_MAX_REQUESTS: u32 = 60;
@@ -46,18 +49,28 @@ const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 
 impl AppState {
     pub fn new(config: Config, db: PgPool) -> Self {
+        let max_install_concurrency = config.max_installation_concurrency;
         Self {
             config: Arc::new(config),
             db: Some(db),
             rate_limiter: Self::default_rate_limiter(),
+            token_cache: Arc::new(github_tokens::TokenCache::new()),
+            installation_gate: Arc::new(installation_gate::InstallationGate::new(
+                max_install_concurrency,
+            )),
         }
     }
 
     pub fn without_db(config: Config) -> Self {
+        let max_install_concurrency = config.max_installation_concurrency;
         Self {
             config: Arc::new(config),
             db: None,
             rate_limiter: Self::default_rate_limiter(),
+            token_cache: Arc::new(github_tokens::TokenCache::new()),
+            installation_gate: Arc::new(installation_gate::InstallationGate::new(
+                max_install_concurrency,
+            )),
         }
     }
 

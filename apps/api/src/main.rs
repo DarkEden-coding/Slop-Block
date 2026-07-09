@@ -9,7 +9,12 @@ async fn main() -> anyhow::Result<()> {
     let addr = config.addr()?;
 
     tracing::info!("connecting to database");
-    let pool = db::connect(&config.database_url).await?;
+    let pool = db::connect_with_options(
+        &config.database_url,
+        config.database_max_connections,
+        config.database_acquire_timeout_secs,
+    )
+    .await?;
 
     tracing::info!("running database migrations");
     db::migrate(&pool).await?;

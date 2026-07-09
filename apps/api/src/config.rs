@@ -32,6 +32,16 @@ pub struct Config {
     pub secrets_encryption_key: Option<Vec<u8>>,
     pub trust_proxy_headers: bool,
     pub hosted_mode: bool,
+    pub database_max_connections: u32,
+    pub database_acquire_timeout_secs: u64,
+    pub job_workers: usize,
+    pub job_poll_interval_ms: u64,
+    pub backfill_subject_delay_seconds: u64,
+    pub github_http_timeout_secs: u64,
+    pub github_http_connect_timeout_secs: u64,
+    pub max_installation_concurrency: usize,
+    pub retention_days: i64,
+    pub dashboard_list_page_size: i64,
 }
 
 impl Config {
@@ -155,6 +165,54 @@ impl Config {
             .map(|value| parse_bool("HOSTED_MODE", &value))
             .transpose()?
             .unwrap_or(false);
+        let database_max_connections = parse_u32(
+            "DATABASE_MAX_CONNECTIONS",
+            get("DATABASE_MAX_CONNECTIONS").as_deref(),
+            20,
+        )?;
+        let database_acquire_timeout_secs = parse_u64(
+            "DATABASE_ACQUIRE_TIMEOUT_SECS",
+            get("DATABASE_ACQUIRE_TIMEOUT_SECS").as_deref(),
+            30,
+        )?;
+        let job_workers = parse_usize("JOB_WORKERS", get("JOB_WORKERS").as_deref(), 4)?.max(1);
+        let job_poll_interval_ms = parse_u64(
+            "JOB_POLL_INTERVAL_MS",
+            get("JOB_POLL_INTERVAL_MS").as_deref(),
+            1000,
+        )?;
+        let backfill_subject_delay_seconds = parse_u64(
+            "BACKFILL_SUBJECT_DELAY_SECONDS",
+            get("BACKFILL_SUBJECT_DELAY_SECONDS").as_deref(),
+            22,
+        )?
+        .max(1);
+        let github_http_timeout_secs = parse_u64(
+            "GITHUB_HTTP_TIMEOUT_SECS",
+            get("GITHUB_HTTP_TIMEOUT_SECS").as_deref(),
+            30,
+        )?
+        .max(1);
+        let github_http_connect_timeout_secs = parse_u64(
+            "GITHUB_HTTP_CONNECT_TIMEOUT_SECS",
+            get("GITHUB_HTTP_CONNECT_TIMEOUT_SECS").as_deref(),
+            10,
+        )?
+        .max(1);
+        let max_installation_concurrency = parse_usize(
+            "MAX_INSTALLATION_CONCURRENCY",
+            get("MAX_INSTALLATION_CONCURRENCY").as_deref(),
+            2,
+        )?
+        .max(1);
+        let retention_days =
+            parse_i64("RETENTION_DAYS", get("RETENTION_DAYS").as_deref(), 14)?.max(1);
+        let dashboard_list_page_size = parse_i64(
+            "DASHBOARD_LIST_PAGE_SIZE",
+            get("DASHBOARD_LIST_PAGE_SIZE").as_deref(),
+            100,
+        )?
+        .clamp(1, 500);
         let secrets_encryption_key = match get("SECRETS_ENCRYPTION_KEY").filter(|v| !v.is_empty()) {
             Some(raw) => {
                 let bytes = base64::engine::general_purpose::STANDARD
@@ -222,7 +280,61 @@ impl Config {
             secrets_encryption_key,
             trust_proxy_headers,
             hosted_mode,
+            database_max_connections,
+            database_acquire_timeout_secs,
+            job_workers,
+            job_poll_interval_ms,
+            backfill_subject_delay_seconds,
+            github_http_timeout_secs,
+            github_http_connect_timeout_secs,
+            max_installation_concurrency,
+            retention_days,
+            dashboard_list_page_size,
         })
+    }
+
+    #[cfg(test)]
+    pub fn test_fixture() -> Self {
+        Self {
+            host: "127.0.0.1".into(),
+            port: 8080,
+            database_url: "postgres://user:pass@localhost/db".into(),
+            cors_allowed_origins: vec!["http://localhost:3000".into()],
+            cookie_secure: false,
+            github_webhook_secret: None,
+            github_app_id: None,
+            github_private_key: None,
+            github_web_url: "http://localhost:3000".into(),
+            github_api_base: "https://api.github.com".into(),
+            github_oauth_client_id: None,
+            github_oauth_client_secret: None,
+            api_base_url: "http://127.0.0.1:8080".into(),
+            web_base_url: "http://localhost:3000".into(),
+            turnstile_secret: None,
+            turnstile_site_key: None,
+            hcaptcha_secret: None,
+            hcaptcha_site_key: None,
+            recaptcha_secret: None,
+            recaptcha_site_key: None,
+            turnstile_dev_bypass: false,
+            admin_api_token: None,
+            admin_github_logins: vec![],
+            admin_session_cookie_name: "gho_admin_session".into(),
+            admin_session_secret: None,
+            secrets_encryption_key: None,
+            trust_proxy_headers: false,
+            hosted_mode: false,
+            database_max_connections: 20,
+            database_acquire_timeout_secs: 30,
+            job_workers: 4,
+            job_poll_interval_ms: 1000,
+            backfill_subject_delay_seconds: 22,
+            github_http_timeout_secs: 30,
+            github_http_connect_timeout_secs: 10,
+            max_installation_concurrency: 2,
+            retention_days: 14,
+            dashboard_list_page_size: 100,
+        }
     }
 
     pub fn addr(&self) -> Result<SocketAddr, ConfigError> {
@@ -237,6 +349,38 @@ fn parse_bool(name: &'static str, value: &str) -> Result<bool, ConfigError> {
         "1" | "true" | "yes" | "on" => Ok(true),
         "0" | "false" | "no" | "off" => Ok(false),
         _ => Err(ConfigError::InvalidBool(name)),
+    }
+}
+
+fn parse_u32(name: &'static str, value: Option<&str>, default: u32) -> Result<u32, ConfigError> {
+    match value {
+        Some(raw) => raw.parse::<u32>().map_err(|_| ConfigError::Invalid(name)),
+        None => Ok(default),
+    }
+}
+
+fn parse_u64(name: &'static str, value: Option<&str>, default: u64) -> Result<u64, ConfigError> {
+    match value {
+        Some(raw) => raw.parse::<u64>().map_err(|_| ConfigError::Invalid(name)),
+        None => Ok(default),
+    }
+}
+
+fn parse_usize(
+    name: &'static str,
+    value: Option<&str>,
+    default: usize,
+) -> Result<usize, ConfigError> {
+    match value {
+        Some(raw) => raw.parse::<usize>().map_err(|_| ConfigError::Invalid(name)),
+        None => Ok(default),
+    }
+}
+
+fn parse_i64(name: &'static str, value: Option<&str>, default: i64) -> Result<i64, ConfigError> {
+    match value {
+        Some(raw) => raw.parse::<i64>().map_err(|_| ConfigError::Invalid(name)),
+        None => Ok(default),
     }
 }
 

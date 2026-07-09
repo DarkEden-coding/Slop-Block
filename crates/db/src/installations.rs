@@ -145,3 +145,112 @@ pub async fn list_repositories(
     .fetch_all(pool)
     .await
 }
+
+pub async fn list_repositories_page(
+    pool: &PgPool,
+    installation_id: i64,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<GithubRepository>> {
+    sqlx::query_as::<_, GithubRepository>(
+        "SELECT * FROM github_repositories WHERE installation_id=$1 AND active=true ORDER BY full_name LIMIT $2 OFFSET $3",
+    )
+    .bind(installation_id)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn mark_repository_inactive(pool: &PgPool, repository_id: i64) -> Result<()> {
+    sqlx::query(
+        "UPDATE github_repositories SET active=false, updated_at=now() WHERE repository_id=$1",
+    )
+    .bind(repository_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn deactivate_repositories_not_in(
+    pool: &PgPool,
+    installation_id: i64,
+    active_repository_ids: &[i64],
+) -> Result<u64> {
+    let result = sqlx::query(
+        "UPDATE github_repositories
+         SET active=false, updated_at=now()
+         WHERE installation_id=$1
+           AND active=true
+           AND NOT (repository_id = ANY($2))",
+    )
+    .bind(installation_id)
+    .bind(active_repository_ids)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
+pub async fn list_installations_page(
+    pool: &PgPool,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<GithubInstallation>> {
+    sqlx::query_as::<_, GithubInstallation>(
+        "SELECT * FROM github_installations WHERE deleted_at IS NULL ORDER BY account_login LIMIT $1 OFFSET $2",
+    )
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn list_user_installations_page(
+    pool: &PgPool,
+    github_user_id: i64,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<GithubInstallation>> {
+    sqlx::query_as::<_, GithubInstallation>(
+        "SELECT i.* FROM github_installations i
+         JOIN installation_admins a ON a.installation_id=i.installation_id
+         WHERE a.github_user_id=$1 AND i.deleted_at IS NULL
+         ORDER BY i.account_login
+         LIMIT $2 OFFSET $3",
+    )
+    .bind(github_user_id)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn list_repositories_for_user_page(
+    pool: &PgPool,
+    github_user_id: Option<i64>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<GithubRepository>> {
+    if let Some(user_id) = github_user_id {
+        sqlx::query_as::<_, GithubRepository>(
+            "SELECT r.* FROM github_repositories r
+             JOIN installation_admins a ON a.installation_id=r.installation_id
+             WHERE a.github_user_id=$1 AND r.active=true
+             ORDER BY r.full_name
+             LIMIT $2 OFFSET $3",
+        )
+        .bind(user_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await
+    } else {
+        sqlx::query_as::<_, GithubRepository>(
+            "SELECT * FROM github_repositories WHERE active=true ORDER BY full_name LIMIT $1 OFFSET $2",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await
+    }
+}

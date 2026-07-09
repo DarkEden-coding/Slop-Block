@@ -11,6 +11,11 @@ pub enum JobKind {
     GitHubSubjectEvent,
     BackfillScan,
     BackfillSubject,
+    GitHubWebhookDispatch,
+    SyncInstallation,
+    PropagationPlan,
+    PropagationSubject,
+    RetentionCleanup,
 }
 
 impl JobKind {
@@ -19,6 +24,11 @@ impl JobKind {
             Self::GitHubSubjectEvent => "github_subject_event",
             Self::BackfillScan => "backfill_scan",
             Self::BackfillSubject => "backfill_subject",
+            Self::GitHubWebhookDispatch => "github_webhook_dispatch",
+            Self::SyncInstallation => "sync_installation",
+            Self::PropagationPlan => "propagation_plan",
+            Self::PropagationSubject => "propagation_subject",
+            Self::RetentionCleanup => "retention_cleanup",
         }
     }
 }
@@ -92,10 +102,23 @@ pub async fn fail(pool: &PgPool, id: i64, error: &str, policy: RetryPolicy) -> R
         .await?;
     let retry_at = if job.attempts >= job.max_attempts {
         None
+    } else if let Some(paused) = parse_rate_limit_until(error) {
+        Some(paused)
     } else {
         Some(OffsetDateTime::now_utc() + policy.backoff_delay(job.attempts))
     };
     db::fail_job(pool, id, error, retry_at).await
+}
+
+pub fn parse_rate_limit_until(error: &str) -> Option<OffsetDateTime> {
+    let marker = "github_rate_limited_until:";
+    let idx = error.find(marker)?;
+    let raw = error[idx + marker.len()..].trim();
+    let token = raw.split_whitespace().next().unwrap_or(raw);
+    if let Ok(ts) = token.parse::<i64>() {
+        return OffsetDateTime::from_unix_timestamp(ts).ok();
+    }
+    OffsetDateTime::parse(token, &time::format_description::well_known::Rfc3339).ok()
 }
 
 pub async fn runner_loop<F, Fut, C>(
@@ -158,5 +181,11 @@ mod tests {
         assert_eq!(policy.backoff_delay(3), Duration::from_secs(40));
         assert_eq!(policy.backoff_delay(4), Duration::from_secs(60));
         assert_eq!(policy.backoff_delay(99), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn parses_rate_limit_unix_timestamp() {
+        let until = parse_rate_limit_until("github_rate_limited_until:1700000000").unwrap();
+        assert_eq!(until.unix_timestamp(), 1_700_000_000);
     }
 }

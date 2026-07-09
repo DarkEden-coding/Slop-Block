@@ -30,6 +30,34 @@ pub async fn mark_webhook_processed(
     Ok(())
 }
 
+pub async fn clear_webhook_processing_error(pool: &PgPool, delivery_id: &str) -> Result<()> {
+    sqlx::query("UPDATE webhook_events SET processing_error=NULL WHERE delivery_id=$1")
+        .bind(delivery_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn purge_processed_webhook_events(pool: &PgPool, older_than_days: i64) -> Result<u64> {
+    let result = sqlx::query(
+        "DELETE FROM webhook_events WHERE processed_at IS NOT NULL AND processed_at < now() - ($1::text || ' days')::interval",
+    )
+    .bind(older_than_days)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
+pub async fn purge_audit_log(pool: &PgPool, older_than_days: i64) -> Result<u64> {
+    let result = sqlx::query(
+        "DELETE FROM audit_log WHERE created_at < now() - ($1::text || ' days')::interval",
+    )
+    .bind(older_than_days)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
 pub async fn upsert_bot_artifact(
     pool: &PgPool,
     repository_id: i64,

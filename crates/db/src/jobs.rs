@@ -32,12 +32,81 @@ pub async fn claim_job(
     worker: &str,
     stale_after_seconds: i64,
 ) -> Result<Option<Job>> {
-    sqlx::query_as::<_, Job>("UPDATE jobs SET status='running', attempts=attempts+1, locked_by=$1, locked_at=now(), updated_at=now() WHERE id = (SELECT id FROM jobs WHERE (status='queued' OR (status='running' AND locked_at < now() - ($2::text || ' seconds')::interval)) AND run_at <= now() AND attempts < max_attempts ORDER BY priority, run_at, id FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING *")
-        .bind(worker).bind(stale_after_seconds).fetch_optional(pool).await
+    sqlx::query_as::<_, Job>(
+        r#"
+        UPDATE jobs
+        SET status='running',
+            attempts=attempts+1,
+            locked_by=$1,
+            locked_at=now(),
+            updated_at=now()
+        WHERE id = (
+            SELECT j.id
+            FROM jobs j
+            WHERE (
+                j.status='queued'
+                OR (
+                    j.status='running'
+                    AND j.locked_at < now() - ($2::text || ' seconds')::interval
+                )
+            )
+              AND j.run_at <= now()
+              AND j.attempts < j.max_attempts
+              AND (
+                NOT j.available_after_rate_limit
+                OR j.rate_limit_reset_at IS NULL
+                OR j.rate_limit_reset_at <= now()
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM github_rate_limits rl
+                WHERE rl.paused_until > now()
+                  AND (
+                    (
+                      (j.payload->>'installation_id') ~ '^[0-9]+$'
+                      AND rl.bucket = 'installation:' || (j.payload->>'installation_id') || ':core'
+                    )
+                    OR (
+                      (j.payload->>'repository_id') ~ '^[0-9]+$'
+                      AND rl.bucket = (
+                        SELECT 'installation:' || r.installation_id::text || ':core'
+                        FROM github_repositories r
+                        WHERE r.repository_id = (j.payload->>'repository_id')::bigint
+                        LIMIT 1
+                      )
+                    )
+                  )
+              )
+            ORDER BY j.priority, j.run_at, j.id
+            FOR UPDATE SKIP LOCKED
+            LIMIT 1
+        )
+        RETURNING *
+        "#,
+    )
+    .bind(worker)
+    .bind(stale_after_seconds)
+    .fetch_optional(pool)
+    .await
 }
 
 pub async fn complete_job(pool: &PgPool, id: i64) -> Result<Option<Job>> {
-    sqlx::query_as::<_, Job>("UPDATE jobs SET status='completed', completed_at=now(), locked_by=NULL, locked_at=NULL, updated_at=now() WHERE id=$1 RETURNING *").bind(id).fetch_optional(pool).await
+    sqlx::query_as::<_, Job>(
+        "UPDATE jobs SET status='completed', completed_at=now(), locked_by=NULL, locked_at=NULL, available_after_rate_limit=false, rate_limit_reset_at=NULL, updated_at=now() WHERE id=$1 RETURNING *",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+}
+
+pub async fn purge_completed_jobs(pool: &PgPool, older_than_days: i64) -> Result<u64> {
+    let result = sqlx::query(
+        "DELETE FROM jobs WHERE status='completed' AND completed_at < now() - ($1::text || ' days')::interval",
+    )
+    .bind(older_than_days)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
 }
 
 pub async fn get_app_setting(pool: &PgPool, key: &str) -> Result<Option<Value>> {

@@ -1,12 +1,8 @@
 use github::GitHubApi;
 use serde_json::json;
 
-pub fn github_content_delay_seconds() -> u64 {
-    std::env::var("BACKFILL_SUBJECT_DELAY_SECONDS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(22)
-        .max(1)
+pub fn github_content_delay_seconds(state: &crate::AppState) -> u64 {
+    state.config.backfill_subject_delay_seconds.max(1)
 }
 
 pub async fn sync_user_installations(
@@ -16,7 +12,21 @@ pub async fn sync_user_installations(
     login: &str,
     source: &str,
 ) -> Result<(), sqlx::Error> {
+    sync_user_installations_filtered(pool, installations, github_user_id, login, source, None).await
+}
+
+pub async fn sync_user_installations_filtered(
+    pool: &db::PgPool,
+    installations: &[github::Installation],
+    github_user_id: i64,
+    login: &str,
+    source: &str,
+    only_installation_id: Option<i64>,
+) -> Result<(), sqlx::Error> {
     for installation in installations {
+        if only_installation_id.is_some_and(|id| installation.id as i64 != id) {
+            continue;
+        }
         let account = &installation.account;
         let account_login = account
             .as_ref()

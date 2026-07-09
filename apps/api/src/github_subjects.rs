@@ -1,4 +1,4 @@
-use github::{CheckRunRequest, GitHubApi, ReqwestGitHubClient};
+use github::{CheckRunRequest, GitHubApi};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use time::OffsetDateTime;
@@ -59,10 +59,11 @@ pub async fn process_subject(
         anyhow::bail!("installation mismatch");
     }
     let installation_id = work.installation_id.unwrap_or(repo.installation_id as u64);
-    let client = ReqwestGitHubClient::with_base_url(&state.config.github_api_base);
+    let _permit = state.installation_gate.acquire(installation_id).await;
+    let client = crate::github_tokens::github_client(state);
     let bucket = format!("installation:{installation_id}:core");
     if let Some(paused) = db::github_pause_until(pool, &bucket).await? {
-        anyhow::bail!("github_rate_limited_until:{paused}");
+        anyhow::bail!("github_rate_limited_until:{}", paused.unix_timestamp());
     }
     let token = match installation_token(state, installation_id).await {
         Ok(token) => token,
@@ -74,13 +75,6 @@ pub async fn process_subject(
 
     let is_bot = matches!(work.user_type.as_deref(), Some("Bot"));
     let is_app = matches!(work.user_type.as_deref(), Some("App"));
-    let perm = client
-        .collaborator_permission(&token, &repo.owner, &repo.name, &work.login)
-        .await
-        .ok();
-    let is_collaborator = perm
-        .as_ref()
-        .is_some_and(|p| matches!(p.permission.as_str(), "admin" | "maintain" | "write"));
     let trust = db::get_trusted_subject(
         pool,
         repo.repository_id,
@@ -88,6 +82,17 @@ pub async fn process_subject(
         &work.github_user_id.to_string(),
     )
     .await?;
+    let is_collaborator = if !policy.exempt_collaborators || is_bot || is_app {
+        false
+    } else {
+        match client
+            .collaborator_permission(&token, &repo.owner, &repo.name, &work.login)
+            .await
+        {
+            Ok(perm) => matches!(perm.permission.as_str(), "admin" | "maintain" | "write"),
+            Err(_) => false,
+        }
+    };
     let target = if work.subject_type == "pull_request" {
         policy::TargetKind::PullRequest
     } else {
@@ -408,7 +413,11 @@ async fn record_github_error(
         )
         .await;
     }
-    anyhow::anyhow!(err)
+    if let Some(paused) = paused_until {
+        anyhow::anyhow!("github_rate_limited_until:{}", paused.unix_timestamp())
+    } else {
+        anyhow::anyhow!(err)
+    }
 }
 
 fn source_verify_url(

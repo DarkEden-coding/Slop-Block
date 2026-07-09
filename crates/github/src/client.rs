@@ -41,6 +41,29 @@ pub trait GitHubApi: Send + Sync {
         owner: &str,
         repo: &str,
     ) -> Result<Vec<PullRequest>, GitHubError>;
+    async fn list_open_issues_page(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        page: u32,
+        per_page: u32,
+    ) -> Result<Vec<Issue>, GitHubError>;
+    async fn list_open_pull_requests_page(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        page: u32,
+        per_page: u32,
+    ) -> Result<Vec<PullRequest>, GitHubError>;
+    async fn list_open_issues_by_creator(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        creator: &str,
+    ) -> Result<Vec<Issue>, GitHubError>;
     async fn issue_labels(
         &self,
         token: &str,
@@ -136,8 +159,22 @@ pub struct ReqwestGitHubClient {
 
 impl ReqwestGitHubClient {
     pub fn with_base_url(api_base: impl Into<String>) -> Self {
+        Self::with_timeouts(api_base, 30, 10)
+    }
+
+    pub fn with_timeouts(
+        api_base: impl Into<String>,
+        request_timeout_secs: u64,
+        connect_timeout_secs: u64,
+    ) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(request_timeout_secs.max(1)))
+            .connect_timeout(std::time::Duration::from_secs(connect_timeout_secs.max(1)))
+            .pool_max_idle_per_host(4)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
-            client: reqwest::Client::new(),
+            client,
             api_base: api_base.into(),
         }
     }
@@ -250,7 +287,7 @@ impl GitHubApi for ReqwestGitHubClient {
             repositories: Vec<Repository>,
         }
         let mut out = Vec::new();
-        for page in 1.. {
+        for page in 1..=MAX_LIST_PAGES {
             let resp: Resp = self
                 .send_json(self.authed(
                     reqwest::Method::GET,
@@ -273,17 +310,9 @@ impl GitHubApi for ReqwestGitHubClient {
         repo: &str,
     ) -> Result<Vec<Issue>, GitHubError> {
         let mut out = Vec::new();
-        for page in 1.. {
-            let resp: Vec<Issue> = self
-                .send_json(self.authed(
-                    reqwest::Method::GET,
-                    &Self::repo_path(
-                        owner,
-                        repo,
-                        &format!("/issues?state=open&per_page=100&page={page}"),
-                    ),
-                    token,
-                ))
+        for page in 1..=MAX_LIST_PAGES {
+            let resp = self
+                .list_open_issues_page(token, owner, repo, page, 100)
                 .await?;
             let done = resp.len() < 100;
             out.extend(resp);
@@ -300,14 +329,77 @@ impl GitHubApi for ReqwestGitHubClient {
         repo: &str,
     ) -> Result<Vec<PullRequest>, GitHubError> {
         let mut out = Vec::new();
-        for page in 1.. {
-            let resp: Vec<PullRequest> = self
+        for page in 1..=MAX_LIST_PAGES {
+            let resp = self
+                .list_open_pull_requests_page(token, owner, repo, page, 100)
+                .await?;
+            let done = resp.len() < 100;
+            out.extend(resp);
+            if done {
+                break;
+            }
+        }
+        Ok(out)
+    }
+    async fn list_open_issues_page(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        page: u32,
+        per_page: u32,
+    ) -> Result<Vec<Issue>, GitHubError> {
+        let per_page = per_page.clamp(1, 100);
+        let page = page.max(1);
+        self.send_json(self.authed(
+            reqwest::Method::GET,
+            &Self::repo_path(
+                owner,
+                repo,
+                &format!("/issues?state=open&per_page={per_page}&page={page}"),
+            ),
+            token,
+        ))
+        .await
+    }
+    async fn list_open_pull_requests_page(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        page: u32,
+        per_page: u32,
+    ) -> Result<Vec<PullRequest>, GitHubError> {
+        let per_page = per_page.clamp(1, 100);
+        let page = page.max(1);
+        self.send_json(self.authed(
+            reqwest::Method::GET,
+            &Self::repo_path(
+                owner,
+                repo,
+                &format!("/pulls?state=open&per_page={per_page}&page={page}"),
+            ),
+            token,
+        ))
+        .await
+    }
+    async fn list_open_issues_by_creator(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        creator: &str,
+    ) -> Result<Vec<Issue>, GitHubError> {
+        let mut out = Vec::new();
+        let creator = path_segment(creator);
+        for page in 1..=MAX_LIST_PAGES {
+            let resp: Vec<Issue> = self
                 .send_json(self.authed(
                     reqwest::Method::GET,
                     &Self::repo_path(
                         owner,
                         repo,
-                        &format!("/pulls?state=open&per_page=100&page={page}"),
+                        &format!("/issues?state=open&creator={creator}&per_page=100&page={page}"),
                     ),
                     token,
                 ))
@@ -530,6 +622,8 @@ impl GitHubApi for ReqwestGitHubClient {
         .await
     }
 }
+
+const MAX_LIST_PAGES: u32 = 100;
 
 async fn classify_api_error(response: reqwest::Response) -> GitHubError {
     let status = response.status();

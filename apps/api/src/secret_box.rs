@@ -54,36 +54,9 @@ mod tests {
     use super::*;
 
     fn config_with_key(key: Option<Vec<u8>>) -> Config {
-        Config {
-            host: "127.0.0.1".into(),
-            port: 8080,
-            database_url: "postgres://user:pass@localhost/db".into(),
-            cors_allowed_origins: vec!["http://localhost:3000".into()],
-            cookie_secure: false,
-            github_webhook_secret: None,
-            github_app_id: None,
-            github_private_key: None,
-            github_web_url: "http://localhost:3000".into(),
-            github_api_base: "https://api.github.com".into(),
-            github_oauth_client_id: None,
-            github_oauth_client_secret: None,
-            api_base_url: "http://127.0.0.1:8080".into(),
-            web_base_url: "http://localhost:3000".into(),
-            turnstile_secret: None,
-            turnstile_site_key: None,
-            hcaptcha_secret: None,
-            hcaptcha_site_key: None,
-            recaptcha_secret: None,
-            recaptcha_site_key: None,
-            turnstile_dev_bypass: false,
-            admin_api_token: None,
-            admin_github_logins: vec![],
-            admin_session_cookie_name: "gho_admin_session".into(),
-            admin_session_secret: None,
-            secrets_encryption_key: key,
-            trust_proxy_headers: false,
-            hosted_mode: false,
-        }
+        let mut config = Config::test_fixture();
+        config.secrets_encryption_key = key;
+        config
     }
 
     #[test]

@@ -19,6 +19,18 @@ pub async fn create_verification_session(
     sqlx::query_as::<_, VerificationSession>("INSERT INTO verification_sessions (repository_id,subject_type,subject_id,github_user_id,token_hash,expires_at,metadata) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *").bind(repository_id).bind(subject_type).bind(subject_id).bind(github_user_id).bind(token_hash).bind(expires_at).bind(metadata).fetch_one(pool).await
 }
 
+pub async fn get_verification_session_by_public_id(
+    pool: &PgPool,
+    public_id: Uuid,
+) -> Result<Option<VerificationSession>> {
+    sqlx::query_as::<_, VerificationSession>(
+        "SELECT * FROM verification_sessions WHERE public_id=$1",
+    )
+    .bind(public_id)
+    .fetch_optional(pool)
+    .await
+}
+
 pub async fn get_verification_session(
     pool: &PgPool,
     public_id: Uuid,

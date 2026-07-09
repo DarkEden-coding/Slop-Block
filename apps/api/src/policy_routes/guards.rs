@@ -54,6 +54,7 @@ pub(crate) async fn find_repo_for_headers(
     }
 }
 
+#[allow(dead_code)]
 pub(crate) async fn policy_installation_token(
     state: &AppState,
     installation_id: u64,

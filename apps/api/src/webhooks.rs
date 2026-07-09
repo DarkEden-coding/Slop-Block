@@ -59,34 +59,72 @@ pub async fn handle_github_webhook(
         }));
     }
 
-    let processing = process_event(&state, pool, &event_type, &payload).await;
-    match processing {
+    let job_payload = json!({
+        "delivery_id": delivery_id,
+        "event_type": event_type,
+        "installation_id": installation_id,
+        "repository_id": repository_id,
+        "payload": compact_processing_payload(&event_type, &payload),
+    });
+    let dedupe = format!("webhook:{delivery_id}");
+    jobs::enqueue_deduped(
+        pool,
+        jobs::JobKind::GitHubWebhookDispatch,
+        job_payload,
+        None,
+        8,
+        Some(&dedupe),
+        5,
+    )
+    .await
+    .map_err(WebhookError::Db)?;
+
+    Ok(Json(WebhookResponse { status: "accepted" }))
+}
+
+pub async fn handle_webhook_dispatch(
+    state: &AppState,
+    pool: &db::PgPool,
+    payload: Value,
+) -> anyhow::Result<()> {
+    #[derive(Deserialize)]
+    struct DispatchPayload {
+        delivery_id: String,
+        event_type: String,
+        installation_id: Option<i64>,
+        repository_id: Option<i64>,
+        payload: Value,
+    }
+    let dispatch: DispatchPayload = serde_json::from_value(payload)?;
+    match process_event(state, pool, &dispatch.event_type, &dispatch.payload).await {
         Ok(()) => {
-            db::mark_webhook_processed(pool, &delivery_id, None)
-                .await
-                .map_err(WebhookError::Db)?;
+            db::mark_webhook_processed(pool, &dispatch.delivery_id, None).await?;
             db::insert_audit(
                 pool,
                 Some("github_webhook"),
                 "github.webhook.processed",
-                repository_id,
+                dispatch.repository_id,
                 None,
                 None,
-                json!({"delivery_id": delivery_id, "event_type": event_type, "installation_id": installation_id}),
+                json!({
+                    "delivery_id": dispatch.delivery_id,
+                    "event_type": dispatch.event_type,
+                    "installation_id": dispatch.installation_id
+                }),
             )
-            .await
-            .map_err(WebhookError::Db)?;
-            Ok(Json(WebhookResponse {
-                status: "processed",
-            }))
+            .await?;
+            Ok(())
         }
         Err(err) => {
             let message = err.to_string();
-            error!(%delivery_id, %event_type, error = %message, "github webhook processing failed");
-            db::mark_webhook_processed(pool, &delivery_id, Some(&message))
-                .await
-                .map_err(WebhookError::Db)?;
-            Err(err)
+            error!(
+                delivery_id = %dispatch.delivery_id,
+                event_type = %dispatch.event_type,
+                error = %message,
+                "github webhook processing failed"
+            );
+            // Leave processed_at NULL so retries can recover.
+            Err(anyhow::anyhow!(message))
         }
     }
 }
@@ -138,6 +176,18 @@ async fn process_event(
                 if let Some(repos) = payload.get(key).and_then(Value::as_array) {
                     for repo in repos {
                         upsert_repository_from_value(pool, repo, installation_id).await?;
+                    }
+                }
+            }
+            if let Some(repos) = payload
+                .get("repositories_removed")
+                .and_then(Value::as_array)
+            {
+                for repo in repos {
+                    if let Some(repository_id) = repo.get("id").and_then(Value::as_i64) {
+                        db::mark_repository_inactive(pool, repository_id)
+                            .await
+                            .map_err(WebhookError::Db)?;
                     }
                 }
             }
@@ -288,13 +338,10 @@ async fn process_subject_event(
     })
     .map_err(|_| WebhookError::InvalidJson)?;
     let dedupe = if ev.subject_type == "pull_request" {
-        let sha = payload
-            .get("head_sha")
-            .and_then(Value::as_str)
-            .unwrap_or("none");
+        // Coalesce synchronize bursts onto one active job per PR.
         format!(
-            "subject:webhook:repo:{}:pr:{}:{}",
-            repo.repository_id, ev.number, sha
+            "subject:webhook:repo:{}:pr:{}",
+            repo.repository_id, ev.number
         )
     } else {
         format!(
@@ -328,6 +375,22 @@ fn payload_summary(payload: &Value) -> Value {
         "issue_number": payload.pointer("/issue/number"),
         "pull_request_number": payload.pointer("/pull_request/number"),
     })
+}
+
+/// Compact payload for async webhook jobs: keep routing fields, drop issue/PR bodies.
+fn compact_processing_payload(event_type: &str, payload: &Value) -> Value {
+    let mut out = payload.clone();
+    if matches!(event_type, "issues" | "pull_request") {
+        if let Some(obj) = out.get_mut("issue").and_then(Value::as_object_mut) {
+            obj.remove("body");
+            obj.remove("title");
+        }
+        if let Some(obj) = out.get_mut("pull_request").and_then(Value::as_object_mut) {
+            obj.remove("body");
+            obj.remove("title");
+        }
+    }
+    out
 }
 
 async fn upsert_installation_from_payload(
@@ -478,36 +541,10 @@ mod tests {
     use tower::ServiceExt;
 
     fn test_state(secret: Option<&str>) -> AppState {
-        AppState::without_db(crate::Config {
-            host: "127.0.0.1".into(),
-            port: 8080,
-            database_url: "postgres://user:pass@localhost/db".into(),
-            cors_allowed_origins: vec!["http://localhost:3000".into()],
-            cookie_secure: true,
-            github_webhook_secret: secret.map(str::to_owned),
-            github_app_id: None,
-            github_private_key: None,
-            github_web_url: "http://localhost:3000".into(),
-            github_api_base: "https://api.github.com".into(),
-            github_oauth_client_id: None,
-            github_oauth_client_secret: None,
-            api_base_url: "http://127.0.0.1:8080".into(),
-            web_base_url: "http://localhost:3000".into(),
-            turnstile_secret: None,
-            turnstile_site_key: None,
-            hcaptcha_secret: None,
-            hcaptcha_site_key: None,
-            recaptcha_secret: None,
-            recaptcha_site_key: None,
-            turnstile_dev_bypass: false,
-            admin_api_token: None,
-            admin_github_logins: vec![],
-            admin_session_cookie_name: "gho_admin_session".into(),
-            admin_session_secret: None,
-            secrets_encryption_key: None,
-            trust_proxy_headers: false,
-            hosted_mode: false,
-        })
+        let mut config = crate::Config::test_fixture();
+        config.cookie_secure = true;
+        config.github_webhook_secret = secret.map(str::to_owned);
+        AppState::without_db(config)
     }
 
     fn signature(secret: &str, body: &[u8]) -> String {
