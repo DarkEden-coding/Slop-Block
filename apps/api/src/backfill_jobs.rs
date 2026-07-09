@@ -57,14 +57,12 @@ pub async fn handle_backfill_scan(
     let page = p.page.unwrap_or(1).max(1);
     let mut enqueued = p.enqueued.unwrap_or(0);
     let mut discovered = p.discovered.unwrap_or(0);
-    let phase = p.phase.as_deref().unwrap_or_else(|| {
-        if run.include_issues {
-            "issues"
-        } else if run.include_pull_requests {
-            "pull_requests"
-        } else {
-            "done"
-        }
+    let phase = p.phase.as_deref().unwrap_or(if run.include_issues {
+        "issues"
+    } else if run.include_pull_requests {
+        "pull_requests"
+    } else {
+        "done"
     });
 
     match phase {
