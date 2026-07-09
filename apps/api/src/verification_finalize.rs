@@ -9,6 +9,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::github_helpers::{ensure_policy_labels, github_content_delay_seconds};
+use crate::github_subjects::record_github_error;
 use crate::github_tokens::{github_client, installation_token};
 use crate::AppState;
 
@@ -148,38 +149,23 @@ pub async fn handle_propagation_plan(
     }
 
     if let Some(user_id) = session.github_user_id {
-        let _permit = state
-            .installation_gate
-            .acquire(repo.installation_id as u64)
-            .await;
-        let token = installation_token(state, repo.installation_id as u64).await?;
-        let client = github_client(state);
-        let open_items = client
-            .list_open_issues_by_creator(&token, &repo.owner, &repo.name, login)
-            .await?;
-        for issue in open_items {
-            if issue.user.id as i64 != user_id {
+        // Webhooks and backfills populate this local ledger. Avoid scanning all
+        // open GitHub work by creator when a user verifies.
+        for subject in db::observed_subjects_for_user(pool, repo.repository_id, user_id).await? {
+            let number = subject.subject_id.parse::<u64>().unwrap_or(0);
+            if handled.contains(&(subject.subject_type.clone(), number)) {
                 continue;
             }
-            let subject_type = if issue.pull_request.is_some() {
-                "pull_request"
-            } else {
-                "issue"
-            };
-            if handled.contains(&(subject_type.to_string(), issue.number)) {
-                continue;
-            }
-            handled.insert((subject_type.to_string(), issue.number));
-            let labels = issue.labels.iter().map(|l| l.name.clone()).collect();
+            handled.insert((subject.subject_type.clone(), number));
             enqueue_propagation_subject(
                 state,
                 pool,
                 run.id,
                 repo.repository_id,
-                subject_type,
-                issue.number,
+                &subject.subject_type,
+                number,
+                subject.head_sha.as_deref(),
                 None,
-                Some(labels),
                 sequence,
             )
             .await?;
@@ -245,9 +231,17 @@ pub async fn handle_propagation_subject(
         .installation_gate
         .acquire(repo.installation_id as u64)
         .await;
-    let token = installation_token(state, repo.installation_id as u64).await?;
+    let bucket = format!("installation:{}:core", repo.installation_id);
+    let token = match installation_token(state, repo.installation_id as u64).await {
+        Ok(token) => token,
+        Err(err) => match err.downcast::<github::GitHubError>() {
+            Ok(err) => return Err(record_github_error(pool, &bucket, err).await),
+            Err(err) => return Err(err),
+        },
+    };
     let client = github_client(state);
     apply_verified_state(
+        state,
         pool,
         &client,
         &token,
@@ -258,7 +252,7 @@ pub async fn handle_propagation_subject(
         p.head_sha.as_deref(),
         p.label_names,
     )
-    .await;
+    .await?;
     db::advance_propagation_progress(
         pool,
         p.propagation_run_id,
@@ -287,6 +281,7 @@ pub async fn finalize(state: &AppState, s: &db::VerificationSession) {
 
 #[allow(clippy::too_many_arguments)]
 async fn apply_verified_state(
+    state: &AppState,
     pool: &db::PgPool,
     client: &github::ReqwestGitHubClient,
     token: &str,
@@ -296,14 +291,18 @@ async fn apply_verified_state(
     issue_number: u64,
     head_sha: Option<&str>,
     current_labels: Option<Vec<String>>,
-) {
+) -> anyhow::Result<()> {
+    let installation_id = repo.installation_id as u64;
+    let bucket = format!("installation:{installation_id}:core");
     let labels = match current_labels {
         Some(labels) => labels,
-        None => client
+        None => match client
             .issue_labels(token, &repo.owner, &repo.name, issue_number)
             .await
-            .map(|labels| labels.into_iter().map(|label| label.name).collect())
-            .unwrap_or_default(),
+        {
+            Ok(labels) => labels.into_iter().map(|label| label.name).collect(),
+            Err(err) => return Err(record_github_error(pool, &bucket, err).await),
+        },
     };
     let remove = [policy.apply_label.as_ref(), policy.pending_label.as_ref()]
         .into_iter()
@@ -318,15 +317,30 @@ async fn apply_verified_state(
             next_labels.push(label.clone());
         }
     }
+    state.github_content_gate.acquire(installation_id).await;
     if let Err(err) = client
         .set_labels(token, &repo.owner, &repo.name, issue_number, &next_labels)
         .await
     {
         if matches!(err, github::GitHubError::ApiStatus(status) if status.as_u16() == 404) {
-            ensure_policy_labels(client, token, repo, policy).await;
-            let _ = client
+            ensure_policy_labels(
+                &state.github_content_gate,
+                installation_id,
+                client,
+                token,
+                repo,
+                policy,
+            )
+            .await;
+            state.github_content_gate.acquire(installation_id).await;
+            if let Err(err) = client
                 .set_labels(token, &repo.owner, &repo.name, issue_number, &next_labels)
-                .await;
+                .await
+            {
+                return Err(record_github_error(pool, &bucket, err).await);
+            }
+        } else {
+            return Err(record_github_error(pool, &bucket, err).await);
         }
     }
     if let Ok(Some(artifact)) = db::get_bot_artifact(
@@ -339,9 +353,13 @@ async fn apply_verified_state(
     .await
     {
         if let Some(id) = artifact.external_id.and_then(|x| x.parse().ok()) {
-            let _ = client
+            state.github_content_gate.acquire(installation_id).await;
+            if let Err(err) = client
                 .delete_issue_comment(token, &repo.owner, &repo.name, id)
-                .await;
+                .await
+            {
+                return Err(record_github_error(pool, &bucket, err).await);
+            }
         }
     }
     if subject_type == "pull_request" {
@@ -369,11 +387,16 @@ async fn apply_verified_state(
                             json!({"title":"Human verification complete","summary":"The author completed OAuth and CAPTCHA verification."}),
                         ),
                     };
-                    let _ = client
+                    state.github_content_gate.acquire(installation_id).await;
+                    if let Err(err) = client
                         .update_check_run(token, &repo.owner, &repo.name, id, &req)
-                        .await;
+                        .await
+                    {
+                        return Err(record_github_error(pool, &bucket, err).await);
+                    }
                 }
             }
         }
     }
+    Ok(())
 }

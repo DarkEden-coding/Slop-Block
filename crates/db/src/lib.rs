@@ -8,6 +8,7 @@ mod policy;
 mod propagation;
 mod rate_limits;
 mod sessions;
+mod subjects;
 
 pub use artifacts::*;
 pub use backfill::*;
@@ -19,3 +20,4 @@ pub use policy::*;
 pub use propagation::*;
 pub use rate_limits::*;
 pub use sessions::*;
+pub use subjects::*;

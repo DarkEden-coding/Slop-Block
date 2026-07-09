@@ -48,6 +48,8 @@ pub async fn sync_user_installations_filtered(
 }
 
 pub async fn ensure_policy_labels(
+    content_gate: &crate::github_content_gate::GitHubContentGate,
+    installation_id: u64,
     client: &github::ReqwestGitHubClient,
     token: &str,
     repo: &db::GithubRepository,
@@ -70,6 +72,7 @@ pub async fn ensure_policy_labels(
             }
             _ => ("0e8a16", Some("Human verification is complete")),
         };
+        content_gate.acquire(installation_id).await;
         let _ = client
             .create_label(token, &repo.owner, &repo.name, label, color, description)
             .await;

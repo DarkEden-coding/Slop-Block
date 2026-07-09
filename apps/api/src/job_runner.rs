@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use crate::{
     backfill_jobs::{handle_backfill_scan, handle_backfill_subject},
+    github_subjects::record_github_error,
     github_subjects::{process_subject, SubjectWork},
     github_tokens::{github_client, installation_token},
     verification_finalize::{handle_propagation_plan, handle_propagation_subject},
@@ -97,9 +98,19 @@ pub async fn handle_sync_installation(
         .installation_gate
         .acquire(p.installation_id as u64)
         .await;
-    let token = installation_token(state, p.installation_id as u64).await?;
+    let bucket = format!("installation:{}:core", p.installation_id);
+    let token = match installation_token(state, p.installation_id as u64).await {
+        Ok(token) => token,
+        Err(err) => match err.downcast::<github::GitHubError>() {
+            Ok(err) => return Err(record_github_error(pool, &bucket, err).await),
+            Err(err) => return Err(err),
+        },
+    };
     let client = github_client(state);
-    let repos = client.installation_repositories(&token).await?;
+    let repos = match client.installation_repositories(&token).await {
+        Ok(repos) => repos,
+        Err(err) => return Err(record_github_error(pool, &bucket, err).await),
+    };
     let mut ids = Vec::with_capacity(repos.len());
     for repo in repos {
         ids.push(repo.id as i64);

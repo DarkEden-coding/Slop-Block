@@ -507,7 +507,7 @@ impl GitHubApi for ReqwestGitHubClient {
         if r.status().is_success() || r.status() == StatusCode::NOT_FOUND {
             Ok(())
         } else {
-            Err(GitHubError::ApiStatus(r.status()))
+            Err(classify_api_error(r).await)
         }
     }
     async fn create_issue_comment(
@@ -565,7 +565,7 @@ impl GitHubApi for ReqwestGitHubClient {
         if r.status().is_success() || r.status() == StatusCode::NOT_FOUND {
             Ok(())
         } else {
-            Err(GitHubError::ApiStatus(r.status()))
+            Err(classify_api_error(r).await)
         }
     }
     async fn create_check_run(

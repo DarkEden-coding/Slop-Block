@@ -3,7 +3,7 @@ use time::OffsetDateTime;
 
 use crate::{
     github_helpers::github_content_delay_seconds,
-    github_subjects::{process_subject, SubjectWork},
+    github_subjects::{process_subject, record_github_error, SubjectWork},
     github_tokens::{github_client, installation_token},
     AppState,
 };
@@ -52,7 +52,14 @@ pub async fn handle_backfill_scan(
         .installation_gate
         .acquire(repo.installation_id as u64)
         .await;
-    let token = installation_token(state, repo.installation_id as u64).await?;
+    let bucket = format!("installation:{}:core", repo.installation_id);
+    let token = match installation_token(state, repo.installation_id as u64).await {
+        Ok(token) => token,
+        Err(err) => match err.downcast::<github::GitHubError>() {
+            Ok(err) => return Err(record_github_error(pool, &bucket, err).await),
+            Err(err) => return Err(err),
+        },
+    };
     let gh = github_client(state);
     let page = p.page.unwrap_or(1).max(1);
     let mut enqueued = p.enqueued.unwrap_or(0);
@@ -68,9 +75,13 @@ pub async fn handle_backfill_scan(
     match phase {
         "issues" if run.include_issues => {
             db::mark_backfill_phase(pool, run.id, "scanning", Some("scanning_issues")).await?;
-            let issues = gh
+            let issues = match gh
                 .list_open_issues_page(&token, &repo.owner, &repo.name, page, 100)
-                .await?;
+                .await
+            {
+                Ok(issues) => issues,
+                Err(err) => return Err(record_github_error(pool, &bucket, err).await),
+            };
             let page_len = issues.len();
             for issue in issues {
                 if issue.pull_request.is_some() {
@@ -128,9 +139,13 @@ pub async fn handle_backfill_scan(
         "pull_requests" | "issues" if run.include_pull_requests => {
             db::mark_backfill_phase(pool, run.id, "scanning", Some("scanning_pull_requests"))
                 .await?;
-            let prs = gh
+            let prs = match gh
                 .list_open_pull_requests_page(&token, &repo.owner, &repo.name, page, 100)
-                .await?;
+                .await
+            {
+                Ok(prs) => prs,
+                Err(err) => return Err(record_github_error(pool, &bucket, err).await),
+            };
             let page_len = prs.len();
             for pr in prs {
                 discovered += 1;

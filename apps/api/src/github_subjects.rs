@@ -41,6 +41,17 @@ pub async fn process_subject(
     let repo = db::get_repository(pool, work.repository_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("repository not found"))?;
+    db::upsert_observed_github_subject(
+        pool,
+        repo.repository_id,
+        &work.subject_type,
+        &work.number.to_string(),
+        work.github_user_id,
+        &work.login,
+        &work.html_url,
+        work.head_sha.as_deref(),
+    )
+    .await?;
     let policy: policy::VerificationPolicy = match db::get_policy(pool, repo.repository_id).await? {
         Some(p) if p.enabled => serde_json::from_value(p.policy).unwrap_or_default(),
         _ => {
@@ -136,6 +147,7 @@ pub async fn process_subject(
         for action in &decision.actions {
             match action {
                 policy::PolicyAction::AddLabel(label) => {
+                    state.github_content_gate.acquire(installation_id).await;
                     let _ = client
                         .add_labels(
                             &token,
@@ -147,6 +159,7 @@ pub async fn process_subject(
                         .await;
                 }
                 policy::PolicyAction::RemoveLabel(label) => {
+                    state.github_content_gate.acquire(installation_id).await;
                     let _ = client
                         .remove_label(&token, &repo.owner, &repo.name, work.number, label)
                         .await;
@@ -214,6 +227,7 @@ pub async fn process_subject(
         .flatten()
         .collect::<Vec<_>>();
     if !required_labels.is_empty() {
+        state.github_content_gate.acquire(installation_id).await;
         if let Err(err) = client
             .add_labels(
                 &token,
@@ -225,7 +239,16 @@ pub async fn process_subject(
             .await
         {
             if matches!(err, github::GitHubError::ApiStatus(status) if status.as_u16() == 404) {
-                ensure_policy_labels(&client, &token, &repo, &policy).await;
+                ensure_policy_labels(
+                    &state.github_content_gate,
+                    installation_id,
+                    &client,
+                    &token,
+                    &repo,
+                    &policy,
+                )
+                .await;
+                state.github_content_gate.acquire(installation_id).await;
                 if let Err(err) = client
                     .add_labels(
                         &token,
@@ -264,6 +287,7 @@ pub async fn process_subject(
             if let Some(a) =
                 artifact.and_then(|a| a.external_id.and_then(|id| id.parse::<u64>().ok()))
             {
+                state.github_content_gate.acquire(installation_id).await;
                 match client
                     .update_issue_comment(&token, &repo.owner, &repo.name, a, &body)
                     .await
@@ -273,6 +297,7 @@ pub async fn process_subject(
                     // while a backfill item is running. Treat that race as stale state
                     // and create the comment again if this item still requires it.
                     Err(github::GitHubError::ApiStatus(status)) if status.as_u16() == 404 => {
+                        state.github_content_gate.acquire(installation_id).await;
                         client
                             .create_issue_comment(
                                 &token,
@@ -286,11 +311,13 @@ pub async fn process_subject(
                     Err(err) => Err(err),
                 }
             } else {
+                state.github_content_gate.acquire(installation_id).await;
                 client
                     .create_issue_comment(&token, &repo.owner, &repo.name, work.number, &body)
                     .await
             }
         } else {
+            state.github_content_gate.acquire(installation_id).await;
             client
                 .create_issue_comment(&token, &repo.owner, &repo.name, work.number, &body)
                 .await
@@ -348,6 +375,7 @@ pub async fn process_subject(
                     // A concurrent verification can make tracked check-run state stale.
                     // If the old check run is gone, recreate the required check run.
                     Err(github::GitHubError::ApiStatus(status)) if status.as_u16() == 404 => {
+                        state.github_content_gate.acquire(installation_id).await;
                         client
                             .create_check_run(&token, &repo.owner, &repo.name, &req)
                             .await
@@ -355,6 +383,7 @@ pub async fn process_subject(
                     Err(err) => Err(err),
                 }
             } else {
+                state.github_content_gate.acquire(installation_id).await;
                 client
                     .create_check_run(&token, &repo.owner, &repo.name, &req)
                     .await
@@ -382,7 +411,7 @@ pub async fn process_subject(
     })
 }
 
-async fn record_github_error(
+pub async fn record_github_error(
     pool: &db::PgPool,
     bucket: &str,
     err: github::GitHubError,

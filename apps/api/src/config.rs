@@ -40,6 +40,8 @@ pub struct Config {
     pub github_http_timeout_secs: u64,
     pub github_http_connect_timeout_secs: u64,
     pub max_installation_concurrency: usize,
+    pub github_content_max_per_minute: u32,
+    pub github_content_max_per_hour: u32,
     pub retention_days: i64,
     pub dashboard_list_page_size: i64,
 }
@@ -202,7 +204,19 @@ impl Config {
         let max_installation_concurrency = parse_usize(
             "MAX_INSTALLATION_CONCURRENCY",
             get("MAX_INSTALLATION_CONCURRENCY").as_deref(),
-            2,
+            1,
+        )?
+        .max(1);
+        let github_content_max_per_minute = parse_u32(
+            "GITHUB_CONTENT_MAX_PER_MINUTE",
+            get("GITHUB_CONTENT_MAX_PER_MINUTE").as_deref(),
+            72,
+        )?
+        .max(1);
+        let github_content_max_per_hour = parse_u32(
+            "GITHUB_CONTENT_MAX_PER_HOUR",
+            get("GITHUB_CONTENT_MAX_PER_HOUR").as_deref(),
+            450,
         )?
         .max(1);
         let retention_days =
@@ -288,6 +302,8 @@ impl Config {
             github_http_timeout_secs,
             github_http_connect_timeout_secs,
             max_installation_concurrency,
+            github_content_max_per_minute,
+            github_content_max_per_hour,
             retention_days,
             dashboard_list_page_size,
         })
@@ -331,7 +347,9 @@ impl Config {
             backfill_subject_delay_seconds: 22,
             github_http_timeout_secs: 30,
             github_http_connect_timeout_secs: 10,
-            max_installation_concurrency: 2,
+            max_installation_concurrency: 1,
+            github_content_max_per_minute: 72,
+            github_content_max_per_hour: 450,
             retention_days: 14,
             dashboard_list_page_size: 100,
         }

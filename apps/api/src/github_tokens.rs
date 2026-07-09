@@ -112,12 +112,8 @@ pub async fn installation_token(state: &AppState, installation_id: u64) -> anyho
     Ok(exchanged.token)
 }
 
-pub fn github_client(state: &AppState) -> github::ReqwestGitHubClient {
-    github::ReqwestGitHubClient::with_timeouts(
-        &state.config.github_api_base,
-        state.config.github_http_timeout_secs,
-        state.config.github_http_connect_timeout_secs,
-    )
+pub fn github_client(state: &AppState) -> std::sync::Arc<github::ReqwestGitHubClient> {
+    state.github_client.clone()
 }
 
 pub type SharedTokenCache = Arc<TokenCache>;

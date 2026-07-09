@@ -4,6 +4,7 @@ pub mod captcha_config;
 pub mod captcha_routes;
 pub mod config;
 pub mod error;
+pub mod github_content_gate;
 pub mod github_helpers;
 pub mod github_subjects;
 pub mod github_tokens;
@@ -42,6 +43,8 @@ pub struct AppState {
     pub rate_limiter: Arc<rate_limit::RateLimiter>,
     pub token_cache: github_tokens::SharedTokenCache,
     pub installation_gate: installation_gate::SharedInstallationGate,
+    pub github_content_gate: github_content_gate::SharedGitHubContentGate,
+    pub github_client: Arc<github::ReqwestGitHubClient>,
 }
 
 const RATE_LIMIT_MAX_REQUESTS: u32 = 60;
@@ -50,6 +53,13 @@ const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 impl AppState {
     pub fn new(config: Config, db: PgPool) -> Self {
         let max_install_concurrency = config.max_installation_concurrency;
+        let content_per_minute = config.github_content_max_per_minute;
+        let content_per_hour = config.github_content_max_per_hour;
+        let github_client = Arc::new(github::ReqwestGitHubClient::with_timeouts(
+            &config.github_api_base,
+            config.github_http_timeout_secs,
+            config.github_http_connect_timeout_secs,
+        ));
         Self {
             config: Arc::new(config),
             db: Some(db),
@@ -58,11 +68,23 @@ impl AppState {
             installation_gate: Arc::new(installation_gate::InstallationGate::new(
                 max_install_concurrency,
             )),
+            github_content_gate: Arc::new(github_content_gate::GitHubContentGate::new(
+                content_per_minute,
+                content_per_hour,
+            )),
+            github_client,
         }
     }
 
     pub fn without_db(config: Config) -> Self {
         let max_install_concurrency = config.max_installation_concurrency;
+        let content_per_minute = config.github_content_max_per_minute;
+        let content_per_hour = config.github_content_max_per_hour;
+        let github_client = Arc::new(github::ReqwestGitHubClient::with_timeouts(
+            &config.github_api_base,
+            config.github_http_timeout_secs,
+            config.github_http_connect_timeout_secs,
+        ));
         Self {
             config: Arc::new(config),
             db: None,
@@ -71,6 +93,11 @@ impl AppState {
             installation_gate: Arc::new(installation_gate::InstallationGate::new(
                 max_install_concurrency,
             )),
+            github_content_gate: Arc::new(github_content_gate::GitHubContentGate::new(
+                content_per_minute,
+                content_per_hour,
+            )),
+            github_client,
         }
     }
 
